@@ -36,7 +36,7 @@ export default defineConfig(({ command }) => {
       __APP_VERSION__: JSON.stringify(data.version || '1.0.0'),
     },
     server: {
-      port: 3000,
+      port: 5173,
       proxy: {
         '/api': {
           target: 'http://localhost:5149',
