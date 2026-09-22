@@ -1,10 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Routes, Route, NavLink, Navigate } from 'react-router-dom'
 import { useIsAuthenticated, useMsal } from '@azure/msal-react'
 import Home from './pages/Home'
-import ProtocolFlow from './pages/ProtocolFlow'
 import AdminPanel from './pages/AdminPanel'
 import { loginRequest, apiTokenRequest } from './authConfig'
+import * as api from './utils/api'
 import { APP_VERSION } from './version'
 
 const ADMIN_GROUP = import.meta.env.VITE_ADMIN_GROUP_ID
@@ -37,6 +37,27 @@ function App() {
       .catch(() => setIsAdmin(false))
   }, [isAuthenticated, account?.homeAccountId])
 
+  const [registration, setRegistration] = useState({ state: 'idle', error: null })
+
+  const register = useCallback(async () => {
+    if (!account) return
+    setRegistration({ state: 'pending', error: null })
+    try {
+      const token = await api.acquireApiToken(instance, account)
+      const r = await api.selfRegister(token)
+      console.log('[auth] self-register ok', r)
+      setRegistration({ state: 'ok', error: null })
+    } catch (e) {
+      console.error('[auth] self-register failed', e)
+      setRegistration({ state: 'error', error: e.message })
+    }
+  }, [instance, account?.homeAccountId])
+
+  useEffect(() => {
+    if (!isAuthenticated || !account) { setRegistration({ state: 'idle', error: null }); return }
+    register()
+  }, [isAuthenticated, account?.homeAccountId, register])
+
   const handleLogin = () => instance.loginRedirect(loginRequest)
   const handleLogout = () => instance.logoutRedirect()
   const email = account?.username
@@ -57,11 +78,6 @@ function App() {
             <NavLink to="/" end className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
               Home
             </NavLink>
-            {isAuthenticated && (
-              <NavLink to="/flow" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
-                Protocol
-              </NavLink>
-            )}
             {isAdmin && (
               <NavLink to="/admin" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
                 Admin
@@ -71,6 +87,18 @@ function App() {
           <div className="nav-auth">
             {isAuthenticated ? (
               <>
+                {registration.state === 'pending' && <span className="status-badge pending">Registering…</span>}
+                {registration.state === 'ok' && <span className="status-badge success">Registered</span>}
+                {registration.state === 'error' && (
+                  <button
+                    className="status-badge error"
+                    onClick={register}
+                    title={registration.error ?? ''}
+                    style={{ border: 'none', cursor: 'pointer' }}
+                  >
+                    Registration failed · Retry
+                  </button>
+                )}
                 <span className="nav-user" title={email}>{email}</span>
                 <button className="btn btn-secondary nav-btn" onClick={handleLogout}>Sign out</button>
               </>
@@ -84,7 +112,6 @@ function App() {
       <main className="main-content">
         <Routes>
           <Route path="/" element={<Home />} />
-          <Route path="/flow" element={isAuthenticated ? <ProtocolFlow /> : <Navigate to="/" replace />} />
           <Route path="/admin" element={isAuthenticated ? <AdminPanel /> : <Navigate to="/" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

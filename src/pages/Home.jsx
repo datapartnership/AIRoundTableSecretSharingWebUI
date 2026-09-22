@@ -1,28 +1,12 @@
-import { Link } from 'react-router-dom'
-import { useEffect, useState } from 'react'
 import { useIsAuthenticated, useMsal } from '@azure/msal-react'
 import { loginRequest } from '../authConfig'
-import * as api from '../utils/api'
+import EpochDashboard from '../components/EpochDashboard'
 
 export default function Home() {
   const isAuthenticated = useIsAuthenticated()
-  const { instance, accounts } = useMsal()
-  const account = accounts[0]
-  const [epochs, setEpochs] = useState([])
-  const [epochError, setEpochError] = useState(null)
+  const { instance } = useMsal()
 
-  useEffect(() => {
-    if (!isAuthenticated || !account) {
-      setEpochs([])
-      return
-    }
-    let active = true
-    api.acquireApiToken(instance, account)
-      .then((token) => api.getEpochs(token))
-      .then((data) => { if (active) setEpochs(data.epochs ?? []) })
-      .catch((error) => { if (active) setEpochError(error.message) })
-    return () => { active = false }
-  }, [isAuthenticated, account, instance])
+  if (isAuthenticated) return <EpochDashboard />
 
   return (
     <div className="animate-fade-in">
@@ -34,44 +18,10 @@ export default function Home() {
           (post-quantum key encapsulation) and HMAC-SHA256 noise cancellation.
         </p>
         <div className="line" />
-        {isAuthenticated ? (
-          <Link to="/flow" className="btn btn-primary">🚀 Start Protocol</Link>
-        ) : (
-          <button className="btn btn-primary" onClick={() => instance.loginRedirect(loginRequest)}>
-            🔐 Sign In to Start
-          </button>
-        )}
+        <button className="btn btn-primary" onClick={() => instance.loginRedirect(loginRequest)}>
+          🔐 Sign In to Start
+        </button>
       </div>
-
-      {isAuthenticated && (
-        <div className="card" style={{ marginTop: '3rem' }}>
-          <div className="card-header">
-            <span className="card-icon">🗓️</span>
-            <h2 className="card-title">Available epochs</h2>
-          </div>
-          {epochError && <div className="info-box error">⚠️ {epochError}</div>}
-          {!epochError && epochs.length === 0 && (
-            <div className="text-muted">No epochs are currently available.</div>
-          )}
-          {epochs.map((epoch) => (
-            <div key={epoch.epochId} className="calc-step">
-              <div className="step-number">{epoch.epochId}</div>
-              <div className="step-content">
-                <div className="step-title">
-                  {epoch.startDate?.slice(0, 10) ?? 'Unknown start'}
-                  {epoch.isClosed && <span className="status-badge pending" style={{ marginLeft: '0.5rem' }}>Closed</span>}
-                </div>
-                <div className="step-description">
-                  {epoch.producerCount ?? epoch.producerIds?.length ?? 0} partners ·{' '}
-                  {epoch.isEligible
-                    ? 'You are eligible to participate.'
-                    : 'You can view this epoch, but your account is not a participant.'}
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
 
       <div className="feature-grid">
         <div className="feature-card">

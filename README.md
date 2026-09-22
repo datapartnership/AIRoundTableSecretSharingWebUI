@@ -64,11 +64,14 @@ The web UI reads its Entra ID and group IDs from Vite environment variables:
 web-ui/
 ├── src/
 │   ├── pages/
-│   │   ├── Home.jsx          # Landing page
-│   │   ├── ProtocolFlow.jsx  # Automated 4-step protocol wizard
+│   │   ├── Home.jsx          # Landing page (signed out) / epoch dashboard (signed in)
 │   │   ├── AdminPanel.jsx    # Epoch management (admin only)
 │   │   └── Results.jsx       # Aggregate results
+│   ├── components/
+│   │   ├── EpochDashboard.jsx # Open epochs + per-epoch key status; hosts the protocol
+│   │   └── EpochProtocol.jsx  # Automated 4-step protocol for one epoch
 │   ├── utils/
+│   │   ├── localCrypto.js    # localStorage key/secret persistence + key status
 │   │   ├── api.js            # All API calls; Entra token injected via acquireApiToken
 │   │   ├── crypto.js         # ML-KEM-768 via `mlkem` npm package
 │   │   └── noise.js          # HMAC-SHA256 noise; matches C# & Python exactly
