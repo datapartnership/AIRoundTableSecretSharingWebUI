@@ -26,7 +26,7 @@ async function get(path, token) {
   const r = await fetch(`${BASE}${path}`, { headers: hdr(token) })
   if (!r.ok) {
     const body = await r.json().catch(() => ({}))
-    throw Object.assign(new Error(body.error || body.message || r.statusText), { status: r.status })
+    throw Object.assign(new Error(body.error || body.message || r.statusText), { status: r.status, code: body.code })
   }
   return r.json()
 }
@@ -37,7 +37,7 @@ async function post(path, body, token) {
   })
   if (!r.ok) {
     const data = await r.json().catch(() => ({}))
-    throw Object.assign(new Error(data.error || data.message || r.statusText), { status: r.status })
+    throw Object.assign(new Error(data.error || data.message || r.statusText), { status: r.status, code: data.code })
   }
   return r.json()
 }
@@ -51,6 +51,9 @@ export const selfRegister = (token) => post('/registry/producers/me', {}, token)
 // ── Key Exchange ──────────────────────────────────────────────────────────────
 export const registerPublicKey = (epochId, deviceId, publicKeyBase64, token) =>
   post('/keyexchange/register', { epochId, deviceId, publicKeyBase64 }, token)
+
+export const rotatePublicKey = (epochId, deviceId, publicKeyBase64, token) =>
+  post('/keyexchange/rotate', { epochId, deviceId, publicKeyBase64 }, token)
 
 export const getPartnerKeys = (epochId, deviceId, token) =>
   get(`/keyexchange/keys?epochId=${encodeURIComponent(epochId)}&deviceId=${encodeURIComponent(deviceId)}`, token)

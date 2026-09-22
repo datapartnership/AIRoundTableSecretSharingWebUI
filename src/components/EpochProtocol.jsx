@@ -39,11 +39,13 @@ function fail(event, err, data) {
   else console.error(TAG, event, err, data)
 }
 
-const KEY_STATUS_MESSAGE = {
-  mismatch: 'This browser’s key does not match the key registered on the server. Recreate the epoch, then reset local state.',
-  'server-only': 'The server has a public key for you, but this browser has no matching private key. Recreate the epoch, then generate a new key.',
-  'other-device': 'Your key for this epoch was registered from another browser or device. Continue there, or recreate the epoch.',
+const KEY_RECOVERY_BLOCKED_MESSAGE = {
+  mismatch: 'This browser’s key does not match the key registered on the server, and it can’t be replaced automatically because the key exchange has already started. Ask an admin to recreate the epoch.',
+  'server-only': 'This browser has no private key for the key registered on the server, and it can’t be replaced automatically because the key exchange has already started. Ask an admin to recreate the epoch.',
+  'other-device': 'Your key for this epoch was registered from another browser or device, and it can’t be replaced automatically because the key exchange has already started. Continue there, or ask an admin to recreate the epoch.',
 }
+
+const ROTATE_STATES = new Set(['mismatch', 'server-only', 'other-device'])
 
 // Mount with key={epoch.epochId} so all state resets when the selected epoch changes.
 export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isAdmin = false }) {
@@ -61,6 +63,8 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
   const [keyPair, setKeyPair] = useState(null)
   const [keyBusy, setKeyBusy] = useState(false)
   const [keyError, setKeyError] = useState(null)
+  const [keyRotating, setKeyRotating] = useState(false)
+  const [recoveryBlocked, setRecoveryBlocked] = useState(false)
   const [fingerprints, setFingerprints] = useState({ local: null, server: null })
 
   // Polling
@@ -87,6 +91,9 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
   const sentToRef = useRef(new Set())
   const ctSeenRef = useRef(new Map())
   const onKeyStatusChangeRef = useRef(onKeyStatusChange)
+  // Poll responses requested before the last key change describe the old key and must not trigger recovery
+  const keyChangedAtRef = useRef(0)
+  const lastRecoveryStatusRef = useRef(null)
   keyPairRef.current = keyPair
   secretsRef.current = sharedSecrets
   sentToRef.current = sentTo
@@ -134,13 +141,15 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
         const token = await api.acquireApiToken(instance, account)
         if (step > 3) return
 
-        const [s, pk, sent] = await Promise.all([
+        const requestedAt = Date.now()
+        const [rawStatus, pk, sent] = await Promise.all([
           api.getKeyExchangeStatus(epochId, deviceId, token),
           api.getPartnerKeys(epochId, deviceId, token),
           api.getSentCiphertexts(epochId, deviceId, token).catch(() => ({ ciphertexts: [] })),
         ])
         if (!alive) return
 
+        const s = { ...rawStatus, requestedAt }
         setStatus(s)
         setPartnerKeys(pk.partnerKeys ?? [])
         onKeyStatusChangeRef.current?.(epochId, s)
@@ -188,13 +197,6 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
     return () => { alive = false }
   }, [keyPair?.ekBase64, status?.myPublicKeyBase64])
 
-  // ── Manual state reset (escape hatch for stuck states) ─────────────────────
-  const resetLocalState = () => {
-    warn('manual reset local state', { myId, epochId })
-    wipeLocalCrypto(myId, epochId, deviceId)
-    applyClearedCrypto()
-  }
-
   // ── Step 1: generate & register key pair ─────────────────────────────────────
   const generateAndRegister = useCallback(async () => {
     setKeyBusy(true)
@@ -206,6 +208,7 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
       log(existing ? 're-registering existing key' : 'generated new key pair', { myId, epochId })
       await api.registerPublicKey(epochId, deviceId, kp.ekBase64, token)
       log('public key registered')
+      keyChangedAtRef.current = Date.now()
       if (!existing) {
         persistKeyPair(myId, epochId, deviceId, kp)
         setKeyPair(kp)
@@ -215,6 +218,36 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
       setKeyError(e.message)
     } finally {
       setKeyBusy(false)
+    }
+  }, [instance, account, myId, epochId, deviceId])
+
+  // ── Step 1 recovery: replace a missing/mismatched key while nothing depends on it ─
+  const rotateKey = useCallback(async () => {
+    setKeyBusy(true)
+    setKeyRotating(true)
+    setKeyError(null)
+    try {
+      const token = await api.acquireApiToken(instance, account)
+      const kp = await generateMlKemKeyPair()
+      warn('rotating key', { myId, epochId })
+      await api.rotatePublicKey(epochId, deviceId, kp.ekBase64, token)
+      keyChangedAtRef.current = Date.now()
+      wipeLocalCrypto(myId, epochId, deviceId)
+      applyClearedCrypto()
+      persistKeyPair(myId, epochId, deviceId, kp)
+      setKeyPair(kp)
+      log('key rotated')
+    } catch (e) {
+      if (e.status === 409 && e.code === 'exchange-started') {
+        warn('key rotation blocked — exchange already started', { myId, epochId })
+        setRecoveryBlocked(true)
+      } else {
+        fail('key rotation failed', e)
+        setKeyError(e.message)
+      }
+    } finally {
+      setKeyBusy(false)
+      setKeyRotating(false)
     }
   }, [instance, account, myId, epochId, deviceId])
 
@@ -423,17 +456,24 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
   const exchangeComplete = status?.isCiphertextExchangeComplete ?? false
   const keyState = keyStatus(keyPair, status, myId)
   const keysMatch = keyState === 'match'
-  const keyProblem = KEY_STATUS_MESSAGE[keyState] ?? null
+  const keyProblem = recoveryBlocked ? KEY_RECOVERY_BLOCKED_MESSAGE[keyState] ?? null : null
 
   // ── Auto-progression ─────────────────────────────────────────────────────────
 
-  // Step 1: auto-generate only after restore, and only once the server confirms it has no key for this device
+  // Step 1: bring browser and server keys in sync after restore; at most one attempt per fresh poll
   useEffect(() => {
-    if (!hydrated || epochInactive || step !== 1 || keyPair || keyBusy || !myId) return
-    if (!status || status.myPublicKeyBase64) return
-    log('auto: generate and register key')
-    generateAndRegister()
-  }, [hydrated, step, !!keyPair, keyBusy, epochInactive, myId, !!status, status?.myPublicKeyBase64])
+    if (!hydrated || epochInactive || step !== 1 || keyBusy || recoveryBlocked || !myId || !status) return
+    if (status.requestedAt < keyChangedAtRef.current || lastRecoveryStatusRef.current === status) return
+    if (keyState === 'none' || keyState === 'local-only') {
+      lastRecoveryStatusRef.current = status
+      log(keyState === 'none' ? 'auto: generate and register key' : 'auto: re-register existing key')
+      generateAndRegister()
+    } else if (ROTATE_STATES.has(keyState)) {
+      lastRecoveryStatusRef.current = status
+      log('auto: rotate key', { keyState })
+      rotateKey()
+    }
+  }, [hydrated, step, keyState, keyBusy, recoveryBlocked, epochInactive, myId, status])
 
   // Step 1 → 2: advance once all epoch partners registered AND we hold the matching private key
   useEffect(() => {
@@ -486,7 +526,9 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
   const producerCount = epochPartnerIds.length || status?.expectedCount || 0
 
   const setupLabel = () => {
+    if (keyRotating) return 'Repairing key…'
     if (keyBusy) return 'Generating key…'
+    if (recoveryBlocked) return 'Key needs attention'
     if (!status?.registeredPartners?.includes(myId)) return 'Registering…'
     if (!status?.isComplete) return 'Waiting for all producers…'
     return 'Preparing secure session…'
@@ -547,15 +589,6 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
             )}
           </div>
         )}
-
-        <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-          <button className="btn btn-secondary" onClick={generateAndRegister} disabled={keyBusy} style={{ fontSize: '0.85rem' }}>
-            {keyBusy ? '⏳ Working…' : keyPair ? '🔄 Re-register Key' : '⚡ Generate Key'}
-          </button>
-          <button className="btn btn-secondary text-danger" onClick={resetLocalState} style={{ fontSize: '0.8rem' }}>
-            🗑 Reset Local State
-          </button>
-        </div>
       </div>
     )
   }
