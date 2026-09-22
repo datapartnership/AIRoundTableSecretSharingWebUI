@@ -1,9 +1,21 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { Fragment, useState, useEffect, useCallback, useRef } from 'react'
 import { useMsal } from '@azure/msal-react'
 import * as api from '../utils/api'
 import { generateMlKemKeyPair, encapsulate, decapsulate } from '../utils/crypto'
 import { calculateMaskedValue } from '../utils/noise'
-import { parseAndValidateCsv, isCsvFile, epochMonths, CELL_COUNT, ERROR_DISPLAY_CAP, formatInt } from '../utils/csvUpload'
+import {
+  parseAndValidateCsv,
+  isCsvFile,
+  epochMonths,
+  emptyCsvResult,
+  rewriteSampleMonths,
+  CELL_COUNT,
+  COUNTRIES,
+  SERIES,
+  HEADERS,
+  ERROR_DISPLAY_CAP,
+  formatInt,
+} from '../utils/csvUpload'
 import {
   getDeviceId, loadLocalCrypto, wipeLocalCrypto, persistKeyPair, persistSecrets, persistSent, persistSeen,
   keyStatus, keyFingerprint, KEY_STATUS,
@@ -319,7 +331,7 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
     setCsvFileName('')
     if (!file) return
     if (!isCsvFile(file)) {
-      setCsvResult({ ok: false, errors: ['File must be a .csv'], rows: [], monthMap: {}, preview: [] })
+      setCsvResult(emptyCsvResult('File must be a .csv'))
       setCsvFileName(file.name)
       return
     }
@@ -328,11 +340,36 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
       const text = await file.text()
       const months = epochMonths(epoch)
       const result = parseAndValidateCsv(text, months)
-      log('csv parsed', { ok: result.ok, rows: result.rows.length, errors: result.errors.length, monthMap: result.monthMap })
+      log('csv parsed', {
+        ok: result.ok,
+        dataRows: result.dataRowCount,
+        rows: result.rows.length,
+        errors: result.errors.length,
+        missingCells: result.missingCells.length,
+      })
       setCsvResult(result)
     } catch (e) {
       fail('csv parse failed', e)
-      setCsvResult({ ok: false, errors: [e.message || 'Failed to read CSV'], rows: [], monthMap: {}, preview: [] })
+      setCsvResult(emptyCsvResult(e.message || 'Failed to read CSV'))
+    }
+  }
+
+  const downloadSample = async (event) => {
+    const months = epochMonths(epoch)
+    if (!months) return
+    event.preventDefault()
+    try {
+      const res = await fetch('/sample.csv')
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const text = rewriteSampleMonths(await res.text(), months)
+      const url = URL.createObjectURL(new Blob([text], { type: 'text/csv' }))
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `sample-${months[0]}.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      fail('sample download failed', e)
     }
   }
 
@@ -527,8 +564,10 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
     const months = epochMonths(epoch) ?? []
     const allDone = submittedCells.size >= CELL_COUNT
     const errors = csvResult?.errors ?? []
-    const shownErrors = errors.slice(0, ERROR_DISPLAY_CAP)
-    const monthEntries = Object.entries(csvResult?.monthMap ?? {})
+    const fileErrors = errors.filter((e) => !e.record)
+    const rowErrors = errors.filter((e) => e.record)
+    const shownRowErrors = rowErrors.slice(0, ERROR_DISPLAY_CAP)
+    const missingCells = csvResult?.missingCells ?? []
     return (
       <div className="card animate-fade-in">
         <div className="card-header">
@@ -544,6 +583,13 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
         <div className="info-box">
           Upload a CSV of unmasked values. Noise from your shared secrets is applied in the browser before
           submission — the aggregator only sees masked values. Values must be positive integers (no zeros or negatives).
+          {months.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              Required <code>month_date</code> values: <strong>{months.join(', ')}</strong>. The file must have
+              exactly {CELL_COUNT} data rows ({COUNTRIES.length} countries × {months.length} months × {SERIES.length} series),
+              one per cell, with no duplicates.
+            </div>
+          )}
         </div>
 
         {loadError && (
@@ -559,8 +605,14 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
         ) : (
           <>
             <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap', marginBottom: '1rem' }}>
-              <a className="btn btn-secondary" href="/sample.csv" download="sample.csv" style={{ fontSize: '0.85rem' }}>
-                Download sample.csv
+              <a
+                className="btn btn-secondary"
+                href="/sample.csv"
+                download="sample.csv"
+                onClick={downloadSample}
+                style={{ fontSize: '0.85rem' }}
+              >
+                Download sample CSV
               </a>
               <label className="btn btn-secondary" style={{ fontSize: '0.85rem', marginBottom: 0, cursor: 'pointer' }}>
                 Choose CSV
@@ -576,13 +628,82 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
             </div>
 
             {errors.length > 0 && (
-              <div className="info-box error" style={{ maxHeight: 240, overflowY: 'auto' }}>
+              <div className="info-box error" style={{ maxHeight: 420, overflowY: 'auto' }}>
                 <div style={{ fontWeight: 600, marginBottom: 6 }}>CSV validation failed</div>
-                <ul style={{ margin: 0, paddingLeft: '1.2rem' }}>
-                  {shownErrors.map((err, i) => <li key={i}>{err}</li>)}
-                </ul>
-                {errors.length > ERROR_DISPLAY_CAP && (
-                  <div style={{ marginTop: 6 }}>and {errors.length - ERROR_DISPLAY_CAP} more</div>
+                {fileErrors.length > 0 && (
+                  <ul style={{ margin: '0 0 0.75rem', paddingLeft: '1.2rem' }}>
+                    {fileErrors.map((err, i) => <li key={i}>{err.text}</li>)}
+                  </ul>
+                )}
+                {shownRowErrors.length > 0 && (
+                  <div style={{ overflowX: 'auto', background: '#fff', borderRadius: 6 }}>
+                    <table className="results-table compact">
+                      <thead>
+                        <tr>
+                          <th>Row</th>
+                          {HEADERS.map((h) => <th key={h}>{h}</th>)}
+                          <th>Problem</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {shownRowErrors.map((err, i) => (
+                          <Fragment key={i}>
+                            <tr>
+                              <td>{err.row}</td>
+                              {HEADERS.map((h) => (
+                                <td key={h} className={err.column === h ? 'cell-invalid' : undefined}>
+                                  {err.record ? (err.record[h] === '' ? '(empty)' : err.record[h]) : ''}
+                                </td>
+                              ))}
+                              <td>{err.message}</td>
+                            </tr>
+                            {err.duplicateOf && (
+                              <tr className="muted">
+                                <td>{err.duplicateOf.row}</td>
+                                {HEADERS.map((h) => <td key={h}>{err.duplicateOf.record[h]}</td>)}
+                                <td>First occurrence</td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {rowErrors.length > ERROR_DISPLAY_CAP && (
+                  <div style={{ marginTop: 6 }}>and {rowErrors.length - ERROR_DISPLAY_CAP} more row error(s)</div>
+                )}
+                {missingCells.length > 0 && (
+                  <>
+                    <div style={{ fontWeight: 600, margin: '0.75rem 0 6px' }}>
+                      Missing cells ({missingCells.length})
+                    </div>
+                    <div style={{ overflowX: 'auto', background: '#fff', borderRadius: 6 }}>
+                      <table className="results-table compact">
+                        <thead>
+                          <tr>
+                            <th>month_date</th>
+                            <th>country_iso3</th>
+                            <th>indicator</th>
+                            <th>segment</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {missingCells.slice(0, ERROR_DISPLAY_CAP).map((c, i) => (
+                            <tr key={i}>
+                              <td>{c.month}</td>
+                              <td>{c.country}</td>
+                              <td>{c.indicator}</td>
+                              <td>{c.segment}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {missingCells.length > ERROR_DISPLAY_CAP && (
+                      <div style={{ marginTop: 6 }}>and {missingCells.length - ERROR_DISPLAY_CAP} more</div>
+                    )}
+                  </>
                 )}
               </div>
             )}
@@ -590,18 +711,14 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
             {csvResult?.ok && (
               <>
                 <div className="info-box ok">
-                  Valid file: {CELL_COUNT} cells. Months remapped
-                  {monthEntries.length > 0 && (
-                    <>: {monthEntries.map(([from, to]) => `${from} → ${to}`).join(', ')}</>
-                  )}
+                  Valid file: {CELL_COUNT} cells covering {months.join(', ')}.
                 </div>
                 <div style={{ overflowX: 'auto', marginBottom: '1rem' }}>
                   <table className="results-table">
                     <thead>
                       <tr>
                         <th>Country</th>
-                        <th>CSV month</th>
-                        <th>Epoch month</th>
+                        <th>Month</th>
                         <th>Indicator</th>
                         <th>Segment</th>
                         <th>Value</th>
@@ -611,7 +728,6 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
                       {(csvResult.preview ?? []).map((r, i) => (
                         <tr key={i}>
                           <td>{r.country}</td>
-                          <td>{r.csvMonth}</td>
                           <td>{r.month}</td>
                           <td>{r.indicator}</td>
                           <td>{r.segment}</td>

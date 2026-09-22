@@ -435,6 +435,24 @@ h1, h2, h3, h4, h5, h6 {
   background: rgba(0, 30, 96, 0.06);
 }
 
+.results-table.compact th,
+.results-table.compact td {
+  padding: 0.4rem 0.5rem;
+  font-size: 0.8rem;
+}
+
+.results-table td.cell-invalid {
+  background: #fee2e2;
+  color: #b91c1c;
+  font-weight: 600;
+  outline: 1px solid #fca5a5;
+}
+
+.results-table tbody tr.muted td {
+  color: var(--gray-400);
+  font-style: italic;
+}
+
 /* Grid Layout */
 .grid-2 {
   display: grid;
