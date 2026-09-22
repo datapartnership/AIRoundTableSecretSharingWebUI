@@ -23,18 +23,20 @@ function App() {
   const isAuthenticated = useIsAuthenticated()
   const { instance, accounts } = useMsal()
   const account = accounts[0]
-  const [isAdmin, setIsAdmin] = useState(false)
+  // 'unknown' until the access token's groups are inspected; admins never register as participants
+  const [role, setRole] = useState('unknown')
+  const isAdmin = role === 'admin'
 
   useEffect(() => {
-    if (!isAuthenticated || !account) { setIsAdmin(false); return }
+    if (!isAuthenticated || !account) { setRole('unknown'); return }
     if (!ADMIN_GROUP) {
       console.error('VITE_ADMIN_GROUP_ID is not configured; admin UI gating is disabled.')
-      setIsAdmin(false)
+      setRole('partner')
       return
     }
     instance.acquireTokenSilent({ ...apiTokenRequest, account })
-      .then(r => setIsAdmin(parseGroups(r.accessToken).includes(ADMIN_GROUP)))
-      .catch(() => setIsAdmin(false))
+      .then(r => setRole(parseGroups(r.accessToken).includes(ADMIN_GROUP) ? 'admin' : 'partner'))
+      .catch(() => setRole('partner'))
   }, [isAuthenticated, account?.homeAccountId])
 
   const [registration, setRegistration] = useState({ state: 'idle', error: null })
@@ -54,9 +56,9 @@ function App() {
   }, [instance, account?.homeAccountId])
 
   useEffect(() => {
-    if (!isAuthenticated || !account) { setRegistration({ state: 'idle', error: null }); return }
+    if (!isAuthenticated || !account || role !== 'partner') { setRegistration({ state: 'idle', error: null }); return }
     register()
-  }, [isAuthenticated, account?.homeAccountId, register])
+  }, [isAuthenticated, account?.homeAccountId, role, register])
 
   const handleLogin = () => instance.loginRedirect(loginRequest)
   const handleLogout = () => instance.logoutRedirect()
@@ -111,7 +113,7 @@ function App() {
 
       <main className="main-content">
         <Routes>
-          <Route path="/" element={<Home />} />
+          <Route path="/" element={<Home isAdmin={isAdmin} roleKnown={role !== 'unknown'} />} />
           <Route path="/admin" element={isAuthenticated ? <AdminPanel /> : <Navigate to="/" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

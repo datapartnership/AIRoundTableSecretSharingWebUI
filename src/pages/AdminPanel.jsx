@@ -3,6 +3,9 @@ import { useMsal } from '@azure/msal-react'
 import * as api from '../utils/api'
 import { CELL_COUNT, formatInt } from '../utils/csvUpload'
 
+// Must match EpochLifecycle.MinParticipants in the API
+const MIN_PARTICIPANTS = 3
+
 function formatEpochDate(iso) {
   if (!iso) return '—'
   const d = new Date(iso)
@@ -62,13 +65,13 @@ export default function AdminPanel() {
     try {
       const token = await api.acquireApiToken(instance, account)
       const data = await api.getProducers(token)
-      setRegistered(data)
+      setRegistered(data.filter((p) => p.producerId !== myId))
     } catch (e) {
       setRegError(e.message)
     } finally {
       setRegLoading(false)
     }
-  }, [instance, account])
+  }, [instance, account, myId])
 
   const loadEpochs = useCallback(async () => {
     setEpochsLoading(true)
@@ -175,7 +178,8 @@ export default function AdminPanel() {
 
   const allSelected = registered.length > 0 && selected.size === registered.length
   const selectedList = registered.filter((p) => selected.has(p.producerId))
-  const canCreateEpoch = selected.size >= 2
+  const canCreateEpoch = selected.size >= MIN_PARTICIPANTS
+  const missingCount = MIN_PARTICIPANTS - selected.size
 
   return (
     <div className="animate-fade-in">
@@ -278,11 +282,16 @@ export default function AdminPanel() {
 
         {selected.size === 0 ? (
           <div className="text-muted" style={{ padding: '0.75rem 0' }}>
-            Select at least 2 partners above to continue.
+            Select at least {MIN_PARTICIPANTS} partners above to continue.
           </div>
         ) : (
           <div className="text-muted" style={{ marginBottom: '1rem', fontSize: '0.875rem' }}>
             {selected.size} partner{selected.size !== 1 ? 's' : ''} selected: {selectedList.map(p => p.displayName).join(', ')}
+            {!canCreateEpoch && (
+              <div className="text-danger" style={{ marginTop: '0.25rem' }}>
+                Select {missingCount} more partner{missingCount !== 1 ? 's' : ''} — an epoch needs at least {MIN_PARTICIPANTS}.
+              </div>
+            )}
           </div>
         )}
 

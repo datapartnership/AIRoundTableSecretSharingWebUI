@@ -7,7 +7,7 @@ import EpochProtocol from './EpochProtocol'
 
 const POLL_MS = 2000
 
-export default function EpochDashboard() {
+export default function EpochDashboard({ isAdmin = false }) {
   const { instance, accounts } = useMsal()
   const account = accounts[0]
   const myId = account?.localAccountId ?? ''
@@ -24,7 +24,7 @@ export default function EpochDashboard() {
     try {
       const token = await api.acquireApiToken(instance, account)
       const data = await api.getEpochs(token)
-      const list = data.epochs ?? []
+      const list = (data.epochs ?? []).map((e) => (isAdmin ? { ...e, isEligible: false } : e))
       setEpochs(list)
       setEpochError(null)
 
@@ -39,7 +39,7 @@ export default function EpochDashboard() {
       console.error('[dashboard] refresh failed', e)
       setEpochError(e.message)
     }
-  }, [instance, account?.homeAccountId, deviceId])
+  }, [instance, account?.homeAccountId, deviceId, isAdmin])
 
   useEffect(() => {
     if (!account) return
@@ -72,6 +72,7 @@ export default function EpochDashboard() {
   const activeEpoch = selected ?? closedSelection
 
   const badgeFor = (epoch) => {
+    if (isAdmin) return <span className="status-badge pending">View only (admin)</span>
     if (!epoch.isEligible) return <span className="status-badge pending">Not a participant</span>
     const s = statuses[epoch.epochId]
     if (s?.error) return <span className="status-badge error" title={s.error}>Key status unavailable</span>
@@ -91,6 +92,12 @@ export default function EpochDashboard() {
           <span className="card-icon">🗓️</span>
           <h2 className="card-title">Open epochs</h2>
         </div>
+        {isAdmin && (
+          <div className="info-box" style={{ marginBottom: '1rem' }}>
+            <span className="info-box-icon">ℹ️</span>
+            Admins cannot participate in epochs. Use the Admin Panel to create epochs and follow submissions.
+          </div>
+        )}
         {epochError && <div className="info-box error">⚠️ {epochError}</div>}
         {epochs === null && !epochError && <div className="text-muted">Loading epochs…</div>}
         {epochs?.length === 0 && (
@@ -137,6 +144,7 @@ export default function EpochDashboard() {
           epoch={activeEpoch}
           onRefresh={refresh}
           onKeyStatusChange={onKeyStatusChange}
+          isAdmin={isAdmin}
         />
       )}
     </div>

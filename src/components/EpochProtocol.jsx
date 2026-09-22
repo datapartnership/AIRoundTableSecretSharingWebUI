@@ -34,7 +34,7 @@ const KEY_STATUS_MESSAGE = {
 }
 
 // Mount with key={epoch.epochId} so all state resets when the selected epoch changes.
-export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange }) {
+export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isAdmin = false }) {
   const { instance, accounts } = useMsal()
   const account = accounts[0]
   // Azure AD OID matches the JWT sub claim the API uses for metrics
@@ -111,7 +111,7 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange }) {
   }, [myId, epochId, deviceId])
 
   // ── Poll key exchange while setup is in progress ─────────────────────────────
-  const epochInactive = !!epoch.isClosed || epoch.isEligible === false
+  const epochInactive = isAdmin || !!epoch.isClosed || epoch.isEligible === false
 
   useEffect(() => {
     if (!hydrated || !myId || epochInactive) return
@@ -669,6 +669,20 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange }) {
       </div>
     </div>
   )
+
+  const renderAdminReadOnly = () => (
+    <div className="card animate-fade-in">
+      <div className="card-header">
+        <span className="card-icon">🔒</span>
+        <h2 className="card-title">View only</h2>
+      </div>
+      <div className="info-box">
+        Admins cannot exchange keys or submit metrics. Use the Admin Panel to follow epoch {epochId}.
+      </div>
+    </div>
+  )
+
+  if (isAdmin) return <div className="animate-fade-in">{renderAdminReadOnly()}</div>
 
   return (
     <div className="animate-fade-in">

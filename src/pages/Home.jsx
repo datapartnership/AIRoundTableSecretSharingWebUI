@@ -2,11 +2,14 @@ import { useIsAuthenticated, useMsal } from '@azure/msal-react'
 import { loginRequest } from '../authConfig'
 import EpochDashboard from '../components/EpochDashboard'
 
-export default function Home() {
+export default function Home({ isAdmin = false, roleKnown = true }) {
   const isAuthenticated = useIsAuthenticated()
   const { instance } = useMsal()
 
-  if (isAuthenticated) return <EpochDashboard />
+  if (isAuthenticated) {
+    if (!roleKnown) return <div className="text-muted" style={{ padding: '2rem 0' }}>Loading…</div>
+    return <EpochDashboard isAdmin={isAdmin} />
+  }
 
   return (
     <div className="animate-fade-in">
