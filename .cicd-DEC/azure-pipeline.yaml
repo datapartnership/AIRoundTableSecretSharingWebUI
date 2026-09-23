@@ -1,0 +1,88 @@
+# azure-pipeline.yaml
+
+trigger:
+  branches:
+    include: [qa]
+
+variables:
+  - group: "GenAIDashboardVariableGroup"
+
+pool: $(PIPELINE_AGENTPOOL)
+
+name: $(TeamProject)_$(Build.DefinitionName)_$(SourceBranchName)_$(Date:yyyyMMdd)$(Rev:r)
+
+stages:
+  - stage: Build
+    displayName: "Build"
+    jobs:
+      - job: BuildJob
+        displayName: "Build NodeJS Application"
+        steps:
+          - checkout: self
+
+          - task: UseNode@1
+            condition: ne(variables['BUILD_NODEJS_VERSION'], 'BuiltIn')
+            inputs:
+              version: $(BUILD_NODEJS_VERSION)
+            displayName: 'Install Node.js'
+
+          - bash: |
+              set -euo pipefail
+              echo "registry=https://artifactory.worldbank.org/artifactory/api/npm/npm-remote/" > .npmrc
+              echo "//artifactory.worldbank.org/artifactory/api/npm/npm-remote/:_authToken=${ARTIFACTORY_AUTH_TOKEN}" >> .npmrc
+              echo "always-auth=true" >> .npmrc
+            displayName: 'Write .npmrc'
+            env:
+              ARTIFACTORY_AUTH_TOKEN: $(BUILD_ARTIFACTORY_AUTH_TOKEN)
+
+          - bash: npm install
+            displayName: 'Install Dependencies'
+
+          - bash: npm run build
+            displayName: 'Build'
+
+          - bash: npm prune --omit=dev
+            displayName: 'Remove dev dependencies'
+
+          - bash: rm -f .npmrc
+            displayName: 'Remove npm credentials'
+            condition: always()
+
+          - task: ArchiveFiles@2
+            displayName: "Zip Build Output"
+            inputs:
+              rootFolderOrFile: '$(Build.SourcesDirectory)/dist'
+              includeRootFolder: false
+              archiveType: 'zip'
+              archiveFile: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId)_QA.zip'
+              replaceExistingArchive: true
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Artifact'
+            inputs:
+              pathtoPublish: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId)_QA.zip'
+              artifactName: 'application_QA'
+
+  - stage: Deploy
+    displayName: "Deploy to QA"
+    dependsOn: Build
+    condition: succeeded()
+    jobs:
+      - job: DeployJob
+        displayName: "Deploy to QA App Service"
+        steps:
+          - task: DownloadBuildArtifacts@0
+            displayName: 'Download Artifact'
+            inputs:
+              artifactName: application_QA
+              downloadPath: $(System.DefaultWorkingDirectory)
+
+          - task: AzureWebApp@1
+            displayName: 'Deploy to Azure Web App'
+            inputs:
+              azureSubscription: $(DEPLOY_WEBAPP_SERVICE_CONNECTION_QA)
+              appType: $(DEPLOY_WEBAPP_APP_TYPE)
+              appName: $(DEPLOY_WEBAPP_APP_NAME_QA)
+              package: $(System.DefaultWorkingDirectory)/application_QA/$(Build.BuildId)_QA.zip
+              runtimeStack: $(DEPLOY_WEBAPP_RUNTIME_STACK)
+              startUpCommand: $(DEPLOY_WEBAPP_STARTUP_COMMAND)
