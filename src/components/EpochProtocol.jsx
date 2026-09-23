@@ -70,6 +70,7 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
   // Polling
   const [status, setStatus] = useState(null)
   const [partnerKeys, setPartnerKeys] = useState([])
+  const [pollError, setPollError] = useState(null)
 
   // Ciphertext exchange
   const [sentTo, setSentTo] = useState(new Set())       // partners I encapsulated for
@@ -94,6 +95,7 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
   // Poll responses requested before the last key change describe the old key and must not trigger recovery
   const keyChangedAtRef = useRef(0)
   const lastRecoveryStatusRef = useRef(null)
+  const lastDecapStatusRef = useRef(null)
   keyPairRef.current = keyPair
   secretsRef.current = sharedSecrets
   sentToRef.current = sentTo
@@ -150,6 +152,7 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
         if (!alive) return
 
         const s = { ...rawStatus, requestedAt }
+        setPollError(null)
         setStatus(s)
         setPartnerKeys(pk.partnerKeys ?? [])
         onKeyStatusChangeRef.current?.(epochId, s)
@@ -181,6 +184,7 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
         })
       } catch (e) {
         fail('poll failed', e)
+        if (alive) setPollError(`Can’t reach the server to check key exchange progress: ${e.message}`)
       }
     }
 
@@ -500,13 +504,15 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
     }
   }, [hydrated, step, epochKeysReady, allEncapsDone, expectedSmallerIds.length, epochInactive])
 
-  // Step 3: auto-decapsulate whenever new ciphertexts arrive
+  // Step 3: auto-decapsulate at most once per fresh poll until every secret is derived;
+  // a poll that lands while a decapsulation is in flight is picked up once it finishes
   useEffect(() => {
-    if (!hydrated || epochInactive || step !== 3 || encapBusy || encapError || !keyPair || allDecapsDone) return
-    if (expectedLargerIds.length === 0) return
-    log('auto: decapsulate', { expectedLargerIds, actualCiphertexts: status?.actualCiphertexts })
+    if (!hydrated || epochInactive || step !== 3 || encapBusy || encapError || !keyPair || allDecapsDone || !status) return
+    if (expectedLargerIds.length === 0 || lastDecapStatusRef.current === status) return
+    lastDecapStatusRef.current = status
+    log('auto: decapsulate', { expectedLargerIds, actualCiphertexts: status.actualCiphertexts })
     performDecapsulation()
-  }, [hydrated, step, status?.actualCiphertexts, !!keyPair, encapError, allDecapsDone, epochInactive])
+  }, [hydrated, step, status, encapBusy, !!keyPair, encapError, allDecapsDone, epochInactive])
 
   // Step 3 → 4: advance when ciphertext exchange is complete and all secrets derived
   useEffect(() => {
@@ -531,6 +537,12 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
     if (recoveryBlocked) return 'Key needs attention'
     if (!status?.registeredPartners?.includes(myId)) return 'Registering…'
     if (!status?.isComplete) return 'Waiting for all producers…'
+    if (step === 3 && allDecapsDone && !exchangeComplete) {
+      const remaining = status.missingCiphertextSenders?.length ?? 0
+      return remaining > 0
+        ? `Waiting for ${remaining} partner${remaining === 1 ? '' : 's'} to finish key exchange…`
+        : 'Waiting for partners to finish key exchange…'
+    }
     return 'Preparing secure session…'
   }
 
@@ -566,7 +578,7 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
   )
 
   const renderSetup = () => {
-    const error = keyError || keyProblem || encapError
+    const error = keyError || keyProblem || encapError || pollError
     return (
       <div className="card animate-fade-in">
         <div className="card-header">
