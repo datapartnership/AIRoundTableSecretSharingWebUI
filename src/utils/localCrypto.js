@@ -34,10 +34,6 @@ export function persistSecrets(id, epochId, deviceId, map) {
   ))
 }
 
-export function persistSent(id, epochId, deviceId, sent) {
-  localStorage.setItem(ctKey(id, epochId, deviceId), JSON.stringify([...sent]))
-}
-
 export function persistSeen(id, epochId, deviceId, map) {
   localStorage.setItem(ctSeenKey(id, epochId, deviceId), JSON.stringify(Object.fromEntries(map)))
 }
@@ -51,7 +47,6 @@ export function loadLocalKeyPair(id, epochId, deviceId) {
 export function loadLocalCrypto(id, epochId, deviceId) {
   const keyPair = loadLocalKeyPair(id, epochId, deviceId)
   const secrets = new Map()
-  let sentTo = new Set()
   const ctSeen = new Map()
 
   const ss = localStorage.getItem(ssKey(id, epochId, deviceId))
@@ -63,11 +58,6 @@ export function loadLocalCrypto(id, epochId, deviceId) {
     } catch { /* ignore corrupt cache */ }
   }
 
-  const ct = localStorage.getItem(ctKey(id, epochId, deviceId))
-  if (ct) {
-    try { sentTo = new Set(JSON.parse(ct)) } catch { sentTo = new Set() }
-  }
-
   const seen = localStorage.getItem(ctSeenKey(id, epochId, deviceId))
   if (seen) {
     try {
@@ -75,7 +65,7 @@ export function loadLocalCrypto(id, epochId, deviceId) {
     } catch { /* ignore corrupt cache */ }
   }
 
-  return { keyPair, secrets, sentTo, ctSeen }
+  return { keyPair, secrets, ctSeen }
 }
 
 export const KEY_STATUS = {

@@ -17,7 +17,7 @@ import {
   formatInt,
 } from '../utils/csvUpload'
 import {
-  getDeviceId, loadLocalCrypto, wipeLocalCrypto, persistKeyPair, persistSecrets, persistSent, persistSeen,
+  getDeviceId, loadLocalCrypto, wipeLocalCrypto, persistKeyPair, persistSecrets, persistSeen,
   keyStatus, keyFingerprint, KEY_STATUS,
 } from '../utils/localCrypto'
 
@@ -73,7 +73,8 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
   const [pollError, setPollError] = useState(null)
 
   // Ciphertext exchange
-  const [sentTo, setSentTo] = useState(new Set())       // partners I encapsulated for
+  const [sentTo, setSentTo] = useState(new Set())       // partners the server holds my ciphertext for
+  const [received, setReceived] = useState(new Map())   // senderId → ciphertext blob the server holds for me
   const [sharedSecrets, setSharedSecrets] = useState(new Map())
   const [ctSeen, setCtSeen] = useState(new Map())       // senderId → ciphertext blob we already decapped
   const [encapBusy, setEncapBusy] = useState(false)
@@ -96,6 +97,8 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
   const keyChangedAtRef = useRef(0)
   const lastRecoveryStatusRef = useRef(null)
   const lastDecapStatusRef = useRef(null)
+  // Sent lists requested before our last ciphertext post may not include it yet
+  const lastCtPostAtRef = useRef(0)
   keyPairRef.current = keyPair
   secretsRef.current = sharedSecrets
   sentToRef.current = sentTo
@@ -107,6 +110,7 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
     setKeyPair(null)
     setSharedSecrets(new Map())
     setSentTo(new Set())
+    setReceived(new Map())
     setCtSeen(new Map())
     setStep(1)
     setEncapError(null)
@@ -121,12 +125,11 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
       epochId,
       hasKeyPair: !!local.keyPair,
       secretPartners: [...local.secrets.keys()],
-      sentTo: [...local.sentTo],
       seenFrom: [...local.ctSeen.keys()],
     })
+    // Cached secrets only count once the server confirms the matching ciphertexts (see poll)
     setKeyPair(local.keyPair)
     setSharedSecrets(local.secrets)
-    setSentTo(local.sentTo)
     setCtSeen(local.ctSeen)
     setHydrated(true)
   }, [myId, epochId, deviceId])
@@ -144,28 +147,25 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
         if (step > 3) return
 
         const requestedAt = Date.now()
-        const [rawStatus, pk, sent] = await Promise.all([
+        const [rawStatus, pk, sent, inbox] = await Promise.all([
           api.getKeyExchangeStatus(epochId, deviceId, token),
           api.getPartnerKeys(epochId, deviceId, token),
-          api.getSentCiphertexts(epochId, deviceId, token).catch(() => ({ ciphertexts: [] })),
+          api.getSentCiphertexts(epochId, deviceId, token),
+          api.getCiphertexts(epochId, deviceId, token),
         ])
         if (!alive) return
 
         const s = { ...rawStatus, requestedAt }
+        const serverSent = (sent.ciphertexts ?? []).map((c) => c.recipientId)
+        const serverReceived = new Map((inbox.ciphertexts ?? []).map((c) => [c.senderId, c.ciphertextBase64]))
         setPollError(null)
         setStatus(s)
         setPartnerKeys(pk.partnerKeys ?? [])
+        setSentTo((prev) => requestedAt < lastCtPostAtRef.current
+          ? new Set([...prev, ...serverSent])
+          : new Set(serverSent))
+        setReceived(serverReceived)
         onKeyStatusChangeRef.current?.(epochId, s)
-
-        const serverSent = (sent.ciphertexts ?? []).map((c) => c.recipientId)
-        if (serverSent.length) {
-          setSentTo((prev) => {
-            const next = new Set(prev)
-            for (const id of serverSent) next.add(id)
-            persistSent(myId, epochId, deviceId, next)
-            return next
-          })
-        }
 
         log('poll', {
           step,
@@ -177,7 +177,7 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
           ciphertexts: `${s.actualCiphertexts}/${s.expectedCiphertexts}`,
           exchangeComplete: s.isCiphertextExchangeComplete,
           serverSentTo: serverSent,
-          localSentTo: [...sentToRef.current],
+          serverReceivedFrom: [...serverReceived.keys()],
           secretPartners: [...secretsRef.current.keys()],
           hasLocalKey: !!keyPairRef.current,
           hasServerKey: !!s.myPublicKeyBase64,
@@ -207,16 +207,13 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
     setKeyError(null)
     try {
       const token = await api.acquireApiToken(instance, account)
-      const existing = keyPairRef.current
-      const kp = existing ?? await generateMlKemKeyPair()
-      log(existing ? 're-registering existing key' : 'generated new key pair', { myId, epochId })
+      const kp = await generateMlKemKeyPair()
+      log('generated new key pair', { myId, epochId })
       await api.registerPublicKey(epochId, deviceId, kp.ekBase64, token)
       log('public key registered')
       keyChangedAtRef.current = Date.now()
-      if (!existing) {
-        persistKeyPair(myId, epochId, deviceId, kp)
-        setKeyPair(kp)
-      }
+      persistKeyPair(myId, epochId, deviceId, kp)
+      setKeyPair(kp)
     } catch (e) {
       fail('key generate/register failed', e)
       setKeyError(e.message)
@@ -280,11 +277,11 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
 
         const { ctBase64, sharedSecret } = await encapsulate(pk.publicKeyBase64)
         await api.postCiphertext(epochId, deviceId, pk.producerId, pk.deviceId, ctBase64, token)
+        lastCtPostAtRef.current = Date.now()
         log('encapsulated + posted ciphertext', { recipient: pk.producerId, ctBytes: ctBase64?.length })
         newSecrets.set(pk.producerId, sharedSecret)
         newSent.add(pk.producerId)
         persistSecrets(myId, epochId, deviceId, newSecrets)
-        persistSent(myId, epochId, deviceId, newSent)
       }
 
       secretsRef.current = newSecrets
@@ -456,7 +453,7 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
   const allEncapsDone = expectedSmallerIds.length === 0
     || expectedSmallerIds.every((id) => sentTo.has(id) && sharedSecrets.has(id))
   const allDecapsDone = expectedLargerIds.length === 0
-    || expectedLargerIds.every((id) => sharedSecrets.has(id))
+    || expectedLargerIds.every((id) => sharedSecrets.has(id) && received.has(id) && ctSeen.get(id) === received.get(id))
   const exchangeComplete = status?.isCiphertextExchangeComplete ?? false
   const keyState = keyStatus(keyPair, status, myId)
   const keysMatch = keyState === 'match'
@@ -470,7 +467,15 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
     if (status.requestedAt < keyChangedAtRef.current || lastRecoveryStatusRef.current === status) return
     if (keyState === 'none' || keyState === 'local-only') {
       lastRecoveryStatusRef.current = status
-      log(keyState === 'none' ? 'auto: generate and register key' : 'auto: re-register existing key')
+      if (keyState === 'local-only') {
+        // The server has no key for this browser (e.g. after a database reset that reused this
+        // epoch id), so the cached key and secrets can't belong to this exchange
+        warn('auto: server has no key for this browser — discarding cached crypto', { epochId })
+        wipeLocalCrypto(myId, epochId, deviceId)
+        applyClearedCrypto()
+        keyPairRef.current = null
+      }
+      log('auto: generate and register key')
       generateAndRegister()
     } else if (ROTATE_STATES.has(keyState)) {
       lastRecoveryStatusRef.current = status
