@@ -25,12 +25,14 @@ const INDICATOR_SET = new Set(SERIES.map(([i]) => i))
 
 export function epochMonths(epoch) {
   if (!epoch?.startDate) return null
-  const d0 = new Date(epoch.startDate)
-  if (Number.isNaN(d0.getTime())) return null
+  const m = /^(\d{4})-(\d{2})/.exec(String(epoch.startDate))
+  if (!m) return null
+  const year = Number(m[1])
+  const month0 = Number(m[2]) - 1
   return Array.from({ length: MONTH_COUNT }, (_, i) => {
-    const d = new Date(d0)
-    d.setUTCMonth(d.getUTCMonth() + i)
-    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`
+    const total = month0 + i
+    const y = year + Math.floor(total / 12)
+    return `${y}-${String((total % 12) + 1).padStart(2, '0')}`
   })
 }
 
