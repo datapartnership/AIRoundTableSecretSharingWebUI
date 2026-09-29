@@ -1,4 +1,6 @@
-// Noise formula compatible with the C# SecureNoiseGenerator (HMAC-SHA256 based)
+// Noise formula compatible with the C# SecureNoiseGenerator (HMAC-SHA256 based).
+// Noise spans the full int64 range and masking wraps mod 2^64, so a masked value
+// reveals nothing about the actual one; the wrapped sum across partners cancels exactly.
 
 async function deriveNoise(sharedSecretBytes, country, month, indicator, segment) {
   const key = await crypto.subtle.importKey(
@@ -14,21 +16,17 @@ async function deriveNoise(sharedSecretBytes, country, month, indicator, segment
   // Signed little-endian int64 from first 8 bytes
   let seed = 0n
   for (let i = 0; i < 8; i++) seed |= BigInt(hmac[i]) << BigInt(i * 8)
-  if (seed >= 2n ** 63n) seed -= 2n ** 64n
-  // Python-style modulo — always non-negative before subtracting offset
-  const mod = 200_000_001n
-  const raw = seed % mod
-  return Number(raw < 0n ? raw + mod : raw) - 100_000_000
+  return BigInt.asIntN(64, seed)
 }
 
 // secretsMap: Map<partnerId, Uint8Array(32)>
 // Sign convention: +1 if myId < partnerId (lexicographic), -1 otherwise
-// `actual` may be a number, string, or bigint. Returns bigint.
+// `actual` may be a number, string, or bigint. Returns bigint in the signed int64 range.
 export async function calculateMaskedValue(actual, country, month, indicator, segment, myId, secretsMap) {
   let masked = typeof actual === 'bigint' ? actual : BigInt(actual)
   for (const [partnerId, ss] of secretsMap) {
     const noise = await deriveNoise(ss, country, month, indicator, segment)
-    masked += BigInt(noise) * (myId < partnerId ? 1n : -1n)
+    masked += noise * (myId < partnerId ? 1n : -1n)
   }
-  return masked
+  return BigInt.asIntN(64, masked)
 }
