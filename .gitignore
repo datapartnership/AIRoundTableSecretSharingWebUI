@@ -31,14 +31,13 @@ dist-ssr/
 .vitest/
 .vit/
 
-# Environment variables (Contains secret API keys!)
+# Environment variables
 .env
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
 .env.development
-.env.production
 
 # Editor directories and files
 .vscode/*
