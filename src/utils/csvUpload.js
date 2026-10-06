@@ -85,7 +85,10 @@ export function rewriteSampleMonths(text, months) {
     .join('\n')
 }
 
-export function parseAndValidateCsv(text, months) {
+// mode 'quorum': value must be 1 (participate) or 0 (do not participate).
+// mode 'submit' with quorumCells (Map of "country|month|indicator|segment" -> { participates, ignored }):
+// cells you opted out of, or that fell below quorum, must be 0; participating cells must be > 0.
+export function parseAndValidateCsv(text, months, { mode = 'submit', quorumCells = null } = {}) {
   const errors = []
   const add = (row, column, message, record = null, extra = {}) => {
     const where = row == null ? '' : column ? `Row ${row}, column ${column}: ` : `Row ${row}: `
@@ -173,12 +176,26 @@ export function parseAndValidateCsv(text, months) {
 
     let value = null
     if (valueRaw !== '') {
-      if (!VALUE_RE.test(valueRaw)) {
-        fail('value', `value must be a positive integer with no sign, decimal, or separators (got "${valueRaw}")`)
+      if (mode === 'quorum') {
+        if (valueRaw !== '0' && valueRaw !== '1') {
+          fail('value', `value must be 1 (participate) or 0 (do not participate) (got "${valueRaw}")`)
+        } else {
+          value = BigInt(valueRaw)
+        }
+      } else if (!VALUE_RE.test(valueRaw)) {
+        fail('value', `value must be a non-negative integer with no sign, decimal, or separators (got "${valueRaw}")`)
       } else {
         value = BigInt(valueRaw)
-        if (value === 0n) fail('value', 'value cannot be 0')
-        else if (value > LONG_MAX) fail('value', 'value exceeds the maximum 64-bit integer')
+        const q = quorumCells?.get(`${country}|${monthDate}|${indicator}|${segment}`)
+        const mustBeZero = q ? (!q.participates || q.ignored) : false
+        if (value > LONG_MAX) fail('value', 'value exceeds the maximum 64-bit integer')
+        else if (mustBeZero && value !== 0n) {
+          fail('value', q.ignored
+            ? 'this metric fell below the quorum and is ignored; value must be 0'
+            : 'you declined this metric in the Quorum Check; value must be 0')
+        } else if (!mustBeZero && value === 0n) {
+          fail('value', quorumCells ? 'you agreed to participate in this metric; value cannot be 0' : 'value cannot be 0')
+        }
       }
     }
 
@@ -256,4 +273,14 @@ export function formatInt(v) {
   } catch {
     return String(v)
   }
+}
+
+export function quorumSampleCsv(months) {
+  const lines = [HEADERS.join(',')]
+  for (const month of months) {
+    for (const country of COUNTRIES) {
+      for (const [indicator, segment] of SERIES) lines.push(`${month},${country},${indicator},${segment},1`)
+    }
+  }
+  return lines.join('\n')
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { Fragment, useState, useEffect, useCallback } from 'react'
 import { useMsal } from '@azure/msal-react'
 import * as api from '../utils/api'
 import { CELL_COUNT, formatInt } from '../utils/csvUpload'
@@ -363,7 +363,7 @@ export default function AdminPanel() {
                   <td>{formatEpochDate(e.startDate)}</td>
                   <td>
                     <span className={`status-badge ${e.isClosed ? 'pending' : 'success'}`}>
-                      {e.isClosed ? 'Closed' : 'Open'}
+                      {e.isClosed ? 'Closed' : e.quorumComplete === false ? 'Quorum Check' : 'Open'}
                     </span>
                   </td>
                 </tr>
@@ -386,9 +386,12 @@ export default function AdminPanel() {
               <span className="text-strong" style={{ fontWeight: 600 }}>Epoch {epochDetail.epochId}</span>
               {epochDetail.isClosed && <span className="status-badge pending">Closed</span>}
               <span>· {epochDetail.partnerCount} producers</span>
+              {epochDetail.quorumComplete === false && <span className="status-badge warn">Quorum Check</span>}
             </div>
 
-            {epochDetail.missingProducers?.length > 0 ? (
+            <QuorumSection detail={epochDetail} />
+
+            {epochDetail.quorumComplete === false ? null : epochDetail.missingProducers?.length > 0 ? (
               <>
                 <div className="info-box warn">
                   Aggregates are hidden until every producer has submitted every cell.
@@ -446,6 +449,92 @@ export default function AdminPanel() {
           </>
         )}
       </div>
+    </div>
+  )
+}
+
+const shortSig = (sig) => (sig ?? '').slice(0, 12)
+const sigColor = (sig) => `hsl(${parseInt((sig ?? '0').slice(0, 6), 16) % 360}, 60%, 85%)`
+
+// Metrics sharing a signature were backed by exactly the same set of partners.
+function QuorumSection({ detail }) {
+  const cells = detail.quorumCells ?? []
+  const [open, setOpen] = useState(null)
+  if (cells.length === 0 && !(detail.quorumPartners?.length > 0)) return null
+
+  const answered = (detail.quorumPartners ?? []).filter((p) => p.done).length
+  const groups = new Map()
+  for (const c of cells) {
+    if (c.participantCount === 0) continue
+    groups.set(c.signature, (groups.get(c.signature) ?? 0) + 1)
+  }
+
+  return (
+    <div style={{ marginBottom: '1.5rem' }}>
+      <div className="text-strong" style={{ fontWeight: 600, marginBottom: '0.5rem' }}>
+        Quorum Check · {answered}/{detail.quorumPartners?.length ?? 0} partners answered
+      </div>
+      {detail.quorumComplete === false ? (
+        <table className="results-table">
+          <thead><tr><th>Producer</th><th>Answered cells</th></tr></thead>
+          <tbody>
+            {detail.quorumPartners.map((p) => (
+              <tr key={p.producerId}>
+                <td style={{ fontWeight: 600 }}>{p.displayName}</td>
+                <td>{p.done ? 'Done' : `${p.answeredCells}`}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <>
+          <div className="text-muted" style={{ fontSize: '0.8rem', marginBottom: '0.5rem' }}>
+            {groups.size} distinct participation composition(s). Same signature = same set of partners. Metrics under
+            3 participants are ignored. Click a row for the partners.
+          </div>
+          <table className="results-table compact">
+            <thead>
+              <tr>
+                <th>Country</th><th>Month</th><th>Indicator</th><th>Segment</th>
+                <th>Participants</th><th>Signature</th><th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cells.map((c) => {
+                const key = `${c.country}-${c.month}-${c.indicator}-${c.segment}`
+                return (
+                  <Fragment key={key}>
+                    <tr className="clickable" onClick={() => setOpen(open === key ? null : key)}>
+                      <td style={{ fontWeight: 600 }}>{c.country}</td>
+                      <td>{c.month}</td>
+                      <td>{c.indicator}</td>
+                      <td>{c.segment}</td>
+                      <td>{c.participantCount}/{detail.partnerCount}</td>
+                      <td>
+                        <code title={c.signature} style={{ background: sigColor(c.signature), padding: '2px 6px', borderRadius: 4 }}>
+                          {shortSig(c.signature)}
+                        </code>
+                      </td>
+                      <td>
+                        <span className={`status-badge ${c.ignored ? 'error' : 'success'}`}>
+                          {c.ignored ? 'Ignored' : 'Active'}
+                        </span>
+                      </td>
+                    </tr>
+                    {open === key && (
+                      <tr className="muted">
+                        <td colSpan={7} style={{ fontSize: '0.8rem' }}>
+                          {c.participants.length > 0 ? c.participants.map((p) => p.displayName).join(', ') : 'No participants'}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                )
+              })}
+            </tbody>
+          </table>
+        </>
+      )}
     </div>
   )
 }

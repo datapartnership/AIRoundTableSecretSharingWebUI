@@ -84,6 +84,13 @@ export const submitMetricsBatch = (submissions, token) =>
 export const getAggregate = (country, month, indicator, segment, token) =>
   get(`/metrics/aggregate?country=${encodeURIComponent(country)}&month=${encodeURIComponent(month)}&indicator=${encodeURIComponent(indicator)}&segment=${encodeURIComponent(segment)}`, token)
 
+// ── Quorum Check ──────────────────────────────────────────────────────────────
+export const getQuorumStatus = (epochId, token) =>
+  get(`/quorum/status?epochId=${encodeURIComponent(epochId)}`, token)
+
+export const submitQuorumBatch = (rows, token) =>
+  post('/quorum/submit-batch', rows, token)
+
 // ── Admin ─────────────────────────────────────────────────────────────────────
 export const adminReset = (token) => post('/admin/reset', {}, token)
 

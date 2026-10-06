@@ -9,6 +9,7 @@ import {
   epochMonths,
   emptyCsvResult,
   rewriteSampleMonths,
+  quorumSampleCsv,
   CELL_COUNT,
   COUNTRIES,
   SERIES,
@@ -87,6 +88,7 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
   const [submitBusy, setSubmitBusy] = useState(false)
   const [submitError, setSubmitError] = useState(null)
   const [loadError, setLoadError] = useState(null)
+  const [quorum, setQuorum] = useState(null)
 
   const keyPairRef = useRef(null)
   const secretsRef = useRef(new Map())
@@ -135,7 +137,9 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
   }, [myId, epochId, deviceId])
 
   // ── Poll key exchange while setup is in progress ─────────────────────────────
-  const epochInactive = isAdmin || !!epoch.isClosed || epoch.isEligible === false
+  // Key exchange and submission wait for the Quorum Check; epochs without the flag predate it
+  const quorumMode = epoch.quorumComplete === false
+  const epochInactive = isAdmin || !!epoch.isClosed || epoch.isEligible === false || quorumMode
 
   useEffect(() => {
     if (!hydrated || !myId || epochInactive) return
@@ -356,6 +360,30 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
     })()
   }, [step, myId, epochId, instance, account?.homeAccountId])
 
+  // ── Quorum Check status: poll while it runs, load once for submission rules ──
+  useEffect(() => {
+    if (isAdmin || epoch.isEligible === false || epoch.isClosed || !myId) return
+    let alive = true
+    const load = async () => {
+      try {
+        const token = await api.acquireApiToken(instance, account)
+        const q = await api.getQuorumStatus(epochId, token)
+        if (alive) setQuorum(q)
+      } catch (e) {
+        fail('quorum status failed', e)
+        if (alive) setLoadError(e.message)
+      }
+    }
+    load()
+    if (!quorumMode) return () => { alive = false }
+    const id = setInterval(load, POLL_MS)
+    return () => { alive = false; clearInterval(id) }
+  }, [isAdmin, epoch.isEligible, epoch.isClosed, quorumMode, myId, epochId, instance, account?.homeAccountId])
+
+  const quorumCells = quorum?.quorumComplete
+    ? new Map((quorum.cells ?? []).map((c) => [`${c.country}|${c.month}|${c.indicator}|${c.segment}`, c]))
+    : null
+
   // ── Submit CSV ────────────────────────────────────────────────────────────────
   const onCsvPicked = async (event) => {
     const file = event.target.files?.[0]
@@ -373,7 +401,8 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
     try {
       const text = await file.text()
       const months = epochMonths(epoch)
-      const result = parseAndValidateCsv(text, months)
+      if (!quorumMode && !quorumCells) throw new Error('Quorum Check results are still loading; try again in a moment')
+      const result = parseAndValidateCsv(text, months, quorumMode ? { mode: 'quorum' } : { quorumCells })
       log('csv parsed', {
         ok: result.ok,
         dataRows: result.dataRowCount,
@@ -393,6 +422,15 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
     if (!months) return
     event.preventDefault()
     try {
+      if (quorumMode) {
+        const url = URL.createObjectURL(new Blob([quorumSampleCsv(months)], { type: 'text/csv' }))
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `quorum-${months[0]}.csv`
+        a.click()
+        URL.revokeObjectURL(url)
+        return
+      }
       const res = await fetch('/sample.csv')
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const text = rewriteSampleMonths(await res.text(), months)
@@ -413,6 +451,23 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
     setSubmitError(null)
     try {
       const token = await api.acquireApiToken(instance, account)
+      if (quorumMode) {
+        const rows = csvResult.rows.map((row) => ({
+          epochId,
+          country: row.country,
+          month: row.month,
+          indicator: row.indicator,
+          segment: row.segment,
+          value: Number(row.value),
+        }))
+        log('submit quorum', { rows: rows.length, epochId })
+        await api.submitQuorumBatch(rows, token)
+        setQuorum((q) => ({ ...(q ?? {}), myDone: true }))
+        setCsvResult(null)
+        setCsvFileName('')
+        onRefresh?.()
+        return
+      }
       const payload = []
       for (const row of csvResult.rows) {
         const masked = await calculateMaskedValue(
@@ -612,7 +667,7 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
 
   const renderSubmit = () => {
     const months = epochMonths(epoch) ?? []
-    const allDone = submittedCells.size >= CELL_COUNT
+    const allDone = quorumMode ? !!quorum?.myDone : submittedCells.size >= CELL_COUNT
     const errors = csvResult?.errors ?? []
     const fileErrors = errors.filter((e) => !e.record)
     const rowErrors = errors.filter((e) => e.record)
@@ -621,8 +676,8 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
     return (
       <div className="card animate-fade-in">
         <div className="card-header">
-          <span className="card-icon">📊</span>
-          <h2 className="card-title">Submit Data</h2>
+          <span className="card-icon">{quorumMode ? '🗳️' : '📊'}</span>
+          <h2 className="card-title">{quorumMode ? 'Quorum Check' : 'Submit Data'}</h2>
           {months.length > 0 && (
             <span className="text-muted" style={{ marginLeft: 'auto', fontSize: '0.875rem' }}>
               {months[0]} – {months[months.length - 1]}
@@ -630,6 +685,14 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
           )}
         </div>
 
+        {quorumMode ? (
+          <div className="info-box">
+            Fill the same CSV format, but set <code>value</code> to <strong>1</strong> if you will participate in
+            that metric or <strong>0</strong> if you will not. A metric needs at least 3 participants or it is
+            ignored. You must then submit 0 for every metric you declined here. Answers are sent unmasked and
+            cannot be changed.
+          </div>
+        ) : (
         <div className="info-box">
           Upload a CSV of unmasked values. Noise from your shared secrets is applied in the browser before
           submission — the aggregator only sees masked values. Values must be positive integers (no zeros or negatives).
@@ -640,7 +703,15 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
               one per cell, with no duplicates.
             </div>
           )}
+          {quorumCells && (
+            <div style={{ marginTop: 8 }}>
+              Submit <strong>0</strong> for metrics you declined
+              ({[...quorumCells.values()].filter((c) => !c.participates).length}) and for metrics that fell below
+              the quorum ({[...quorumCells.values()].filter((c) => c.participates && c.ignored).length}).
+            </div>
+          )}
         </div>
+        )}
 
         {loadError && (
           <div className="info-box error">
@@ -650,7 +721,9 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
 
         {allDone ? (
           <div className="info-box ok">
-            ✅ All {CELL_COUNT} cells submitted. Waiting for the remaining producers…
+            {quorumMode
+              ? `✅ Quorum Check submitted. Waiting for the remaining partners (${quorum?.answeredPartners ?? 0}/${quorum?.partnerCount ?? producerCount})…`
+              : `✅ All ${CELL_COUNT} cells submitted. Waiting for the remaining producers…`}
           </div>
         ) : (
           <>
@@ -804,7 +877,7 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
               onClick={submitCsv}
               disabled={!csvResult?.ok || submitBusy}
             >
-              {submitBusy ? 'Submitting…' : 'Submit CSV'}
+              {submitBusy ? 'Submitting…' : quorumMode ? 'Submit Quorum Check' : 'Submit CSV'}
             </button>
           </>
         )}
@@ -857,6 +930,7 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
         ? renderNotEligible()
         : epoch.isClosed
           ? renderWaiting()
+          : quorumMode ? renderSubmit()
           : step < 4 ? renderSetup() : renderSubmit()}
     </div>
   )
