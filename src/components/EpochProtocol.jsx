@@ -137,9 +137,7 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
   }, [myId, epochId, deviceId])
 
   // ── Poll key exchange while setup is in progress ─────────────────────────────
-  // Key exchange and submission wait for the Quorum Check; epochs without the flag predate it
-  const quorumMode = epoch.quorumComplete === false
-  const epochInactive = isAdmin || !!epoch.isClosed || epoch.isEligible === false || quorumMode
+  const epochInactive = isAdmin || !!epoch.isClosed || epoch.isEligible === false
 
   useEffect(() => {
     if (!hydrated || !myId || epochInactive) return
@@ -360,7 +358,10 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
     })()
   }, [step, myId, epochId, instance, account?.homeAccountId])
 
-  // ── Quorum Check status: poll while it runs, load once for submission rules ──
+  // ── Quorum Check: runs after key exchange (answers are masked) and gates submission ──
+  const quorumPending = quorum ? !quorum.quorumComplete : epoch.quorumComplete === false
+  const quorumMode = step >= 4 && quorumPending
+
   useEffect(() => {
     if (isAdmin || epoch.isEligible === false || epoch.isClosed || !myId) return
     let alive = true
@@ -375,13 +376,26 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
       }
     }
     load()
-    if (!quorumMode) return () => { alive = false }
+    if (!quorumPending) return () => { alive = false }
     const id = setInterval(load, POLL_MS)
     return () => { alive = false; clearInterval(id) }
-  }, [isAdmin, epoch.isEligible, epoch.isClosed, quorumMode, myId, epochId, instance, account?.homeAccountId])
+  }, [isAdmin, epoch.isEligible, epoch.isClosed, quorumPending, myId, epochId, instance, account?.homeAccountId])
 
+  // Own answers and the secret composition tag never leave the browser unmasked
+  const quorumStoreKey = `quorum_${myId}_${epochId}_${deviceId}`
+  const loadQuorumLocal = () => {
+    try { return JSON.parse(localStorage.getItem(quorumStoreKey) ?? 'null') } catch { return null }
+  }
+  const quorumLocal = loadQuorumLocal()
   const quorumCells = quorum?.quorumComplete
-    ? new Map((quorum.cells ?? []).map((c) => [`${c.country}|${c.month}|${c.indicator}|${c.segment}`, c]))
+    ? (() => {
+        const map = new Map()
+        for (const c of quorum.ignoredCells ?? []) map.set(`${c.country}|${c.month}|${c.indicator}|${c.segment}`, { participates: true, ignored: true })
+        for (const [key, v] of Object.entries(quorumLocal?.answers ?? {})) {
+          map.set(key, { participates: v === 1, ignored: map.get(key)?.ignored ?? false })
+        }
+        return map
+      })()
     : null
 
   // ── Submit CSV ────────────────────────────────────────────────────────────────
@@ -452,14 +466,33 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
     try {
       const token = await api.acquireApiToken(instance, account)
       if (quorumMode) {
-        const rows = csvResult.rows.map((row) => ({
-          epochId,
-          country: row.country,
-          month: row.month,
-          indicator: row.indicator,
-          segment: row.segment,
-          value: Number(row.value),
-        }))
+        const randomTag = () => {
+          const b = crypto.getRandomValues(new BigUint64Array(1))[0]
+          return b === 0n ? 1n : b
+        }
+        const prev = loadQuorumLocal()
+        const tagA = prev?.tagA ? BigInt(prev.tagA) : randomTag()
+        const tagB = prev?.tagB ? BigInt(prev.tagB) : randomTag()
+        const answers = {}
+        const rows = []
+        for (const row of csvResult.rows) {
+          const flag = row.value
+          answers[`${row.country}|${row.month}|${row.indicator}|${row.segment}`] = Number(flag)
+          const mask = (lane, v) => calculateMaskedValue(
+            v, row.country, row.month, `quorum-${lane}:${row.indicator}`, row.segment, myId, sharedSecrets)
+          rows.push({
+            epochId,
+            country: row.country,
+            month: row.month,
+            indicator: row.indicator,
+            segment: row.segment,
+            maskedCount: (await mask('count', flag)).toString(),
+            maskedTagA: (await mask('tagA', flag * BigInt.asIntN(64, tagA))).toString(),
+            maskedTagB: (await mask('tagB', flag * BigInt.asIntN(64, tagB))).toString(),
+          })
+        }
+        // Persist before sending so the answers survive a failed or interrupted request
+        localStorage.setItem(quorumStoreKey, JSON.stringify({ tagA: tagA.toString(), tagB: tagB.toString(), answers }))
         log('submit quorum', { rows: rows.length, epochId })
         await api.submitQuorumBatch(rows, token)
         setQuorum((q) => ({ ...(q ?? {}), myDone: true }))
@@ -689,8 +722,8 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
           <div className="info-box">
             Fill the same CSV format, but set <code>value</code> to <strong>1</strong> if you will participate in
             that metric or <strong>0</strong> if you will not. A metric needs at least 3 participants or it is
-            ignored. You must then submit 0 for every metric you declined here. Answers are sent unmasked and
-            cannot be changed.
+            ignored. You must then submit 0 for every metric you declined here. Answers are masked in your
+            browser with the shared secrets, so the aggregator only learns totals, and cannot be changed.
           </div>
         ) : (
         <div className="info-box">
@@ -930,7 +963,6 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
         ? renderNotEligible()
         : epoch.isClosed
           ? renderWaiting()
-          : quorumMode ? renderSubmit()
           : step < 4 ? renderSetup() : renderSubmit()}
     </div>
   )

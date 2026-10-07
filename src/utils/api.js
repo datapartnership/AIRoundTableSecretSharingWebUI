@@ -100,5 +100,3 @@ export const adminResetAndCreateEpoch = (body, token) =>
 export const adminGetEpochs = (token) => get('/admin/epochs', token)
 
 export const adminGetEpochDetail = (epochId, token) => get(`/admin/epochs/${epochId}`, token)
-
-export const adminCloseQuorum = (epochId, token) => post(`/admin/epochs/${epochId}/close-quorum`, {}, token)
