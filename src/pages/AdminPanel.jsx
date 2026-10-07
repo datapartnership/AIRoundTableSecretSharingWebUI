@@ -111,6 +111,16 @@ export default function AdminPanel() {
     }
   }, [instance, account])
 
+  const forceCloseQuorum = async (epochId) => {
+    try {
+      const token = await api.acquireApiToken(instance, account)
+      setEpochDetail(await api.adminCloseQuorum(epochId, token))
+      loadEpochs()
+    } catch (e) {
+      setDetailError(e.message)
+    }
+  }
+
   useEffect(() => {
     loadRegistered()
     loadEpochs()
@@ -389,7 +399,7 @@ export default function AdminPanel() {
               {epochDetail.quorumComplete === false && <span className="status-badge warn">Quorum Check</span>}
             </div>
 
-            <QuorumSection detail={epochDetail} />
+            <QuorumSection detail={epochDetail} onForceClose={forceCloseQuorum} />
 
             {epochDetail.quorumComplete === false ? null : epochDetail.missingProducers?.length > 0 ? (
               <>
@@ -457,7 +467,7 @@ const shortSig = (sig) => (sig ?? '').slice(0, 12)
 const sigColor = (sig) => `hsl(${parseInt((sig ?? '0').slice(0, 6), 16) % 360}, 60%, 85%)`
 
 // Metrics sharing a signature were backed by exactly the same set of partners.
-function QuorumSection({ detail }) {
+function QuorumSection({ detail, onForceClose }) {
   const cells = detail.quorumCells ?? []
   const [open, setOpen] = useState(null)
   if (cells.length === 0 && !(detail.quorumPartners?.length > 0)) return null
@@ -475,6 +485,14 @@ function QuorumSection({ detail }) {
         Quorum Check · {answered}/{detail.quorumPartners?.length ?? 0} partners answered
       </div>
       {detail.quorumComplete === false ? (
+        <>
+        <button
+          className="btn btn-secondary"
+          style={{ marginBottom: '0.75rem' }}
+          onClick={() => window.confirm('Close the Quorum Check now? Partners who have not answered will count as not participating in every metric.') && onForceClose?.(detail.epochId)}
+        >
+          Close Quorum Check now
+        </button>
         <table className="results-table">
           <thead><tr><th>Producer</th><th>Answered cells</th></tr></thead>
           <tbody>
@@ -486,6 +504,7 @@ function QuorumSection({ detail }) {
             ))}
           </tbody>
         </table>
+        </>
       ) : (
         <>
           <div className="text-muted" style={{ fontSize: '0.8rem', marginBottom: '0.5rem' }}>
