@@ -100,3 +100,9 @@ export const adminResetAndCreateEpoch = (body, token) =>
 export const adminGetEpochs = (token) => get('/admin/epochs', token)
 
 export const adminGetEpochDetail = (epochId, token) => get(`/admin/epochs/${epochId}`, token)
+
+export const adminCancelEpoch = (epochId, reason, token) =>
+  post(`/admin/epochs/${epochId}/cancel`, { reason }, token)
+
+export const adminRecreateEpoch = (epochId, reason, token) =>
+  post(`/admin/epochs/${epochId}/recreate`, { reason }, token)

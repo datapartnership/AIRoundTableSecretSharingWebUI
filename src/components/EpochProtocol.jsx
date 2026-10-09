@@ -40,10 +40,21 @@ function fail(event, err, data) {
   else console.error(TAG, event, err, data)
 }
 
+const SUPPORT_EMAIL = 'datapartnership@worldbank.org'
+
 const KEY_RECOVERY_BLOCKED_MESSAGE = {
-  mismatch: 'This browser’s key does not match the key registered on the server, and it can’t be replaced automatically because the key exchange has already started. Ask an admin to recreate the epoch.',
-  'server-only': 'This browser has no private key for the key registered on the server, and it can’t be replaced automatically because the key exchange has already started. Ask an admin to recreate the epoch.',
-  'other-device': 'Your key for this epoch was registered from another browser or device, and it can’t be replaced automatically because the key exchange has already started. Continue there, or ask an admin to recreate the epoch.',
+  mismatch: `This browser’s key does not match the key registered on the server, and it can’t be replaced automatically because the key exchange has already started. Contact ${SUPPORT_EMAIL} to ask an admin to recreate the epoch.`,
+  'server-only': `This browser has no private key for the key registered on the server, and it can’t be replaced automatically because the key exchange has already started. Contact ${SUPPORT_EMAIL} to ask an admin to recreate the epoch.`,
+  'other-device': `Your key for this epoch was registered from another browser or device, and it can’t be replaced automatically because the key exchange has already started. Continue there, or contact ${SUPPORT_EMAIL} to ask an admin to recreate the epoch.`,
+}
+
+// Renders the support address inside an error message as a mailto link
+function withSupportLink(text) {
+  const parts = String(text).split(SUPPORT_EMAIL)
+  if (parts.length === 1) return text
+  return parts.flatMap((part, i) => i === 0
+    ? [part]
+    : [<a key={i} href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a>, part])
 }
 
 const ROTATE_STATES = new Set(['mismatch', 'server-only', 'other-device'])
@@ -681,7 +692,7 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
 
         {error && (
           <div className="info-box error" style={{ marginBottom: '1rem' }}>
-            ⚠️ {error}
+            ⚠️ {withSupportLink(error)}
             {encapError && (
               <button
                 className="btn btn-secondary"

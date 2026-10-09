@@ -123,6 +123,8 @@ export function parseAndValidateCsv(text, months, { mode = 'submit', quorumCells
   const monthSet = new Set(months)
   const parsed = []
   const seen = new Map()
+  // Cells whose key is valid but whose row failed (e.g. a bad value): present, so not "missing"
+  const coveredInvalid = new Set()
   const foreignMonths = new Set()
   let dataRowCount = 0
   let duplicateCount = 0
@@ -199,9 +201,14 @@ export function parseAndValidateCsv(text, months, { mode = 'submit', quorumCells
       }
     }
 
-    if (!rowOk) continue
-
     const key = `${country}|${monthDate}|${indicator}|${segment}`
+    if (!rowOk) {
+      if (monthSet.has(monthDate) && COUNTRY_SET.has(country) && SERIES_SET.has(`${indicator}|${segment}`)) {
+        coveredInvalid.add(key)
+      }
+      continue
+    }
+
     const original = seen.get(key)
     if (original) {
       duplicateCount++
@@ -214,6 +221,7 @@ export function parseAndValidateCsv(text, months, { mode = 'submit', quorumCells
   }
 
   const presentMonths = new Set(parsed.map((r) => r.month))
+  for (const key of coveredInvalid) presentMonths.add(key.split('|')[1])
   const missingMonths = months.filter((m) => !presentMonths.has(m))
   if (foreignMonths.size > 0) {
     add(null, null, `month_date values ${[...foreignMonths].sort().join(', ')} do not belong to this epoch; use ${months.join(', ')}`)
@@ -228,7 +236,8 @@ export function parseAndValidateCsv(text, months, { mode = 'submit', quorumCells
     for (const month of months) {
       if (missingMonthSet.has(month)) continue
       for (const [indicator, segment] of SERIES) {
-        if (!seen.has(`${country}|${month}|${indicator}|${segment}`)) {
+        const key = `${country}|${month}|${indicator}|${segment}`
+        if (!seen.has(key) && !coveredInvalid.has(key)) {
           missingCells.push({ country, month, indicator, segment })
         }
       }
@@ -241,7 +250,7 @@ export function parseAndValidateCsv(text, months, { mode = 'submit', quorumCells
     const invalid = dataRowCount - parsed.length - duplicateCount
     if (invalid > 0) parts.push(`${invalid} invalid`)
     let summary = parts.join(', ') + '.'
-    const missingTotal = CELL_COUNT - parsed.length
+    const missingTotal = CELL_COUNT - parsed.length - [...coveredInvalid].filter((k) => !seen.has(k)).length
     if (missingTotal > 0) summary += ` ${missingTotal} required cell(s) not covered.`
     add(null, null, summary)
   }

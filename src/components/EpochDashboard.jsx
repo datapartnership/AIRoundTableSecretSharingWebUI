@@ -28,7 +28,7 @@ export default function EpochDashboard({ isAdmin = false }) {
       setEpochs(list)
       setEpochError(null)
 
-      const eligible = list.filter((e) => e.isEligible)
+      const eligible = list.filter((e) => e.isEligible && !e.cancelledAt)
       const results = await Promise.all(eligible.map((e) =>
         api.getKeyExchangeStatus(e.epochId, deviceId, token)
           .then((s) => [e.epochId, s])
@@ -56,7 +56,7 @@ export default function EpochDashboard({ isAdmin = false }) {
     setSearchParams(epochId ? { epoch: String(epochId) } : {}, { replace: true })
   }, [setSearchParams])
 
-  const eligible = (epochs ?? []).filter((e) => e.isEligible)
+  const eligible = (epochs ?? []).filter((e) => e.isEligible && !e.cancelledAt)
   const selected = (epochs ?? []).find((e) => e.epochId === selectedId) ?? null
   if (selected) lastSelectedRef.current = selected
 
@@ -72,6 +72,7 @@ export default function EpochDashboard({ isAdmin = false }) {
   const activeEpoch = selected ?? closedSelection
 
   const badgeFor = (epoch) => {
+    if (epoch.cancelledAt) return <span className="status-badge error">Cancelled by admin</span>
     if (isAdmin) return <span className="status-badge pending">View only (admin)</span>
     if (!epoch.isEligible) return <span className="status-badge pending">Not a participant</span>
     const s = statuses[epoch.epochId]
@@ -128,7 +129,9 @@ export default function EpochDashboard({ isAdmin = false }) {
                   {isSelected && <span className="status-badge success">Selected</span>}
                 </div>
                 <div className="step-description">
-                  {epoch.isEligible && s && !s.error
+                  {epoch.cancelledAt
+                    ? `Cancelled ${formatDate(epoch.cancelledAt)}${epoch.replacedByEpochId ? ` · replaced by epoch ${epoch.replacedByEpochId}` : ''}`
+                    : epoch.isEligible && s && !s.error
                     ? `${s.registeredCount}/${s.expectedCount} partners registered keys`
                     : `${epoch.producerCount ?? epoch.producerIds?.length ?? 0} partners`}
                 </div>
@@ -138,7 +141,11 @@ export default function EpochDashboard({ isAdmin = false }) {
         })}
       </div>
 
-      {activeEpoch && (
+      {activeEpoch?.cancelledAt && (
+        <CancelledEpochNotice epoch={activeEpoch} onSelect={select} />
+      )}
+
+      {activeEpoch && !activeEpoch.cancelledAt && (
         <EpochProtocol
           key={activeEpoch.epochId}
           epoch={activeEpoch}
@@ -147,6 +154,39 @@ export default function EpochDashboard({ isAdmin = false }) {
           isAdmin={isAdmin}
         />
       )}
+    </div>
+  )
+}
+
+function formatDate(iso) {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleString()
+}
+
+function CancelledEpochNotice({ epoch, onSelect }) {
+  return (
+    <div className="card">
+      <div className="card-header">
+        <span className="card-icon">⛔</span>
+        <h2 className="card-title">Epoch {epoch.epochId} was cancelled</h2>
+      </div>
+      <div className="info-box warn">
+        <span className="info-box-icon">⚠️</span>
+        <div>
+          An admin cancelled this epoch on {formatDate(epoch.cancelledAt)}. No further key exchange, Quorum Check answers
+          or submissions are accepted for it.
+          {epoch.cancelReason && <div style={{ marginTop: '0.5rem' }}><strong>Reason:</strong> {epoch.cancelReason}</div>}
+          {epoch.replacedByEpochId && (
+            <div style={{ marginTop: '0.5rem' }}>
+              It was replaced by{' '}
+              <button type="button" className="btn btn-secondary" onClick={() => onSelect(epoch.replacedByEpochId)}>
+                Epoch {epoch.replacedByEpochId}
+              </button>
+              {' '}— continue there.
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   )
 }

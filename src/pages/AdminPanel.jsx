@@ -59,6 +59,13 @@ export default function AdminPanel() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailError, setDetailError] = useState(null)
 
+  // ── Cancel / recreate the selected epoch ────────────────────────────────────
+  const [epochAction, setEpochAction] = useState(null) // 'cancel' | 'recreate' while confirming
+  const [cancelReason, setCancelReason] = useState('')
+  const [actionBusy, setActionBusy] = useState(false)
+  const [actionError, setActionError] = useState(null)
+  const [actionResult, setActionResult] = useState(null)
+
   const loadRegistered = useCallback(async () => {
     setRegLoading(true)
     setRegError(null)
@@ -118,7 +125,39 @@ export default function AdminPanel() {
 
   useEffect(() => {
     loadEpochDetail(selectedEpochId)
+    setEpochAction(null)
+    setCancelReason('')
+    setActionError(null)
   }, [selectedEpochId, loadEpochDetail])
+
+  const handleEpochAction = async () => {
+    const epochId = epochDetail?.epochId
+    if (!epochId || !epochAction) return
+    setActionBusy(true)
+    setActionError(null)
+    setActionResult(null)
+    try {
+      const token = await api.acquireApiToken(instance, account)
+      const reason = cancelReason.trim() || null
+      if (epochAction === 'recreate') {
+        const data = await api.adminRecreateEpoch(epochId, reason, token)
+        setActionResult(`Epoch ${epochId} was cancelled and replaced by epoch ${data.epoch?.epochId}.`)
+        await loadEpochs()
+        if (data.epoch?.epochId) setSelectedEpochId(data.epoch.epochId)
+      } else {
+        await api.adminCancelEpoch(epochId, reason, token)
+        setActionResult(`Epoch ${epochId} was cancelled.`)
+        await loadEpochs()
+        await loadEpochDetail(epochId)
+      }
+      setEpochAction(null)
+      setCancelReason('')
+    } catch (e) {
+      setActionError(e.message)
+    } finally {
+      setActionBusy(false)
+    }
+  }
 
   const toggleSelect = (id) => setSelected((prev) => {
     const next = new Set(prev)
@@ -362,8 +401,8 @@ export default function AdminPanel() {
                   <td>{e.producerCount}</td>
                   <td>{formatEpochDate(e.startDate)}</td>
                   <td>
-                    <span className={`status-badge ${e.isClosed ? 'pending' : 'success'}`}>
-                      {e.isClosed ? 'Closed' : e.quorumComplete === false ? 'Quorum Check' : 'Open'}
+                    <span className={`status-badge ${e.cancelledAt ? 'error' : e.isClosed ? 'pending' : 'success'}`}>
+                      {e.cancelledAt ? 'Cancelled' : e.isClosed ? 'Closed' : e.quorumComplete === false ? 'Quorum Check' : 'Open'}
                     </span>
                   </td>
                 </tr>
@@ -384,10 +423,73 @@ export default function AdminPanel() {
           <>
             <div className="text-muted" style={{ fontSize: '0.875rem', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
               <span className="text-strong" style={{ fontWeight: 600 }}>Epoch {epochDetail.epochId}</span>
+              {epochDetail.cancelledAt && <span className="status-badge error">Cancelled</span>}
               {epochDetail.isClosed && <span className="status-badge pending">Closed</span>}
               <span>· {epochDetail.partnerCount} producers</span>
-              {epochDetail.quorumComplete === false && <span className="status-badge warn">Quorum Check</span>}
+              {!epochDetail.cancelledAt && epochDetail.quorumComplete === false && <span className="status-badge warn">Quorum Check</span>}
             </div>
+
+            {epochDetail.cancelledAt && (
+              <div className="info-box warn" style={{ marginBottom: '1rem' }}>
+                ⛔ Cancelled {new Date(epochDetail.cancelledAt).toLocaleString()}.
+                {epochDetail.cancelReason && <> Reason: {epochDetail.cancelReason}.</>}
+                {epochDetail.replacedByEpochId && (
+                  <>
+                    {' '}Replaced by{' '}
+                    <button className="btn btn-secondary" style={{ padding: '0.15rem 0.5rem', fontSize: '0.8rem' }}
+                      onClick={() => setSelectedEpochId(epochDetail.replacedByEpochId)}>
+                      Epoch {epochDetail.replacedByEpochId}
+                    </button>
+                  </>
+                )}
+                {' '}Partners in this epoch see it as cancelled.
+              </div>
+            )}
+
+            {actionError && <div className="info-box error" style={{ marginBottom: '1rem' }}>⚠️ {actionError}</div>}
+            {actionResult && <div className="info-box ok" style={{ marginBottom: '1rem' }}>✅ {actionResult}</div>}
+
+            {!epochDetail.isClosed && !epochDetail.replacedByEpochId && (
+              <div style={{ marginBottom: '1.5rem' }}>
+                {!epochAction ? (
+                  <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+                    <button className="btn btn-secondary" onClick={() => setEpochAction('recreate')}>
+                      🔁 Recreate epoch
+                    </button>
+                    {!epochDetail.cancelledAt && (
+                      <button className="btn btn-secondary" onClick={() => setEpochAction('cancel')}>
+                        ⛔ Cancel epoch
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                    <span className="text-danger">
+                      {epochAction === 'recreate'
+                        ? `Cancel epoch ${epochDetail.epochId} and create a new epoch with the same ${epochDetail.partnerCount} partners and start month? Key exchange and the Quorum Check start over.`
+                        : `Cancel epoch ${epochDetail.epochId}? Partners can no longer exchange keys, answer the Quorum Check or submit for it.`}
+                      {' '}Partners will see that it was cancelled.
+                    </span>
+                    <textarea
+                      className="form-input"
+                      rows={2}
+                      maxLength={500}
+                      placeholder="Reason shown to partners (optional)"
+                      value={cancelReason}
+                      onChange={(ev) => setCancelReason(ev.target.value)}
+                    />
+                    <div style={{ display: 'flex', gap: '0.75rem' }}>
+                      <button className="btn btn-primary" onClick={handleEpochAction} disabled={actionBusy}>
+                        {actionBusy ? '⏳ Working…' : '⚠️ Confirm'}
+                      </button>
+                      <button className="btn btn-secondary" onClick={() => setEpochAction(null)} disabled={actionBusy}>
+                        Back
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             <QuorumSection detail={epochDetail} />
 
