@@ -13,14 +13,15 @@ function formatEpochDate(iso) {
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' })
 }
 
-function formatMissingCells(cells) {
+function formatMissingCells(cells, ignoredCount = 0) {
   const n = cells?.length ?? 0
   if (n === 0) return '—'
   const preview = cells
     .slice(0, 6)
     .map((c) => `${c.country} ${c.month} ${c.indicator}/${c.segment}`)
   const more = n > 6 ? ' …' : ''
-  return `${n} of ${CELL_COUNT} missing (${preview.join(', ')}${more})`
+  // Below-quorum cells get no data, so they are not required
+  return `${n} of ${CELL_COUNT - ignoredCount} missing (${preview.join(', ')}${more})`
 }
 
 export default function AdminPanel() {
@@ -496,7 +497,7 @@ export default function AdminPanel() {
             {epochDetail.quorumComplete === false ? null : epochDetail.missingProducers?.length > 0 ? (
               <>
                 <div className="info-box warn">
-                  Aggregates are hidden until every producer has submitted every cell.
+                  Aggregates are hidden until every producer has submitted every cell that met the quorum.
                 </div>
                 <div className="text-strong" style={{ fontWeight: 600, marginBottom: '0.75rem' }}>Has not submitted</div>
                 <table className="results-table">
@@ -513,7 +514,7 @@ export default function AdminPanel() {
                         <td style={{ fontWeight: 600, fontFamily: 'Inter, sans-serif' }}>{p.displayName}</td>
                         <td className="text-muted" style={{ fontSize: '0.8rem' }}>{p.producerId}</td>
                         <td style={{ fontSize: '0.8rem' }}>
-                          {formatMissingCells(p.missingCells)}
+                          {formatMissingCells(p.missingCells, (epochDetail.quorumCells ?? []).filter((c) => c.ignored).length)}
                         </td>
                       </tr>
                     ))}

@@ -85,9 +85,44 @@ export function rewriteSampleMonths(text, months) {
     .join('\n')
 }
 
+export function cellKey(country, month, indicator, segment) {
+  return `${country}|${month}|${indicator}|${segment}`
+}
+
+function allCells(months) {
+  const cells = []
+  for (const country of COUNTRIES) {
+    for (const month of months) {
+      for (const [indicator, segment] of SERIES) cells.push({ country, month, indicator, segment })
+    }
+  }
+  return cells
+}
+
+// A cell belongs in the partner's CSV unless they declined it or it fell below the quorum
+export function isCsvCell(quorumCells, key) {
+  const q = quorumCells?.get(key)
+  return !q || (q.participates && !q.ignored)
+}
+
+// Rows the partner must upload
+export function requiredCsvCells(months, quorumCells) {
+  return allCells(months).filter((c) => isCsvCell(quorumCells, cellKey(c.country, c.month, c.indicator, c.segment)))
+}
+
+// Declined cells that met the quorum: the browser submits a masked 0 for them so the masks still cancel
+export function autoZeroCells(months, quorumCells) {
+  if (!quorumCells) return []
+  return allCells(months).filter((c) => {
+    const q = quorumCells.get(cellKey(c.country, c.month, c.indicator, c.segment))
+    return q && !q.participates && !q.ignored
+  })
+}
+
 // mode 'quorum': value must be 1 (participate) or 0 (do not participate).
 // mode 'submit' with quorumCells (Map of "country|month|indicator|segment" -> { participates, ignored }):
-// cells you opted out of, or that fell below quorum, must be 0; participating cells must be > 0.
+// the CSV holds only participating cells that met the quorum, each > 0. Rows for declined cells (0 is sent
+// for them automatically) or cells below the quorum (no data at all) are rejected.
 export function parseAndValidateCsv(text, months, { mode = 'submit', quorumCells = null } = {}) {
   const errors = []
   const add = (row, column, message, record = null, extra = {}) => {
@@ -116,7 +151,11 @@ export function parseAndValidateCsv(text, months, { mode = 'submit', quorumCells
   if (header.length !== HEADERS.length || header.some((h, i) => h !== HEADERS[i])) {
     add(1, null, `Header must be exactly ${HEADERS.join(',')} (got ${header.join(',')})`)
   }
-  if (rawLines.length < 2) {
+  const requiredKeys = new Set(
+    requiredCsvCells(months, quorumCells).map((c) => cellKey(c.country, c.month, c.indicator, c.segment))
+  )
+  const expectedCount = requiredKeys.size
+  if (rawLines.length < 2 && expectedCount > 0) {
     add(null, null, 'File has a header but no data rows')
   }
 
@@ -176,8 +215,16 @@ export function parseAndValidateCsv(text, months, { mode = 'submit', quorumCells
       fail(INDICATOR_SET.has(indicator) ? 'segment' : 'indicator', `Unknown indicator/segment pair "${indicator}","${segment}"`)
     }
 
+    const key = cellKey(country, monthDate, indicator, segment)
+    const q = mode === 'submit' ? quorumCells?.get(key) : null
+    if (q?.ignored) {
+      fail(null, 'this metric fell below the quorum; remove this row (do not submit data for it)')
+    } else if (q && !q.participates) {
+      fail(null, 'you declined this metric in the Quorum Check; remove this row (0 is submitted for it automatically)')
+    }
+
     let value = null
-    if (valueRaw !== '') {
+    if (rowOk && valueRaw !== '') {
       if (mode === 'quorum') {
         if (valueRaw !== '0' && valueRaw !== '1') {
           fail('value', `value must be 1 (participate) or 0 (do not participate) (got "${valueRaw}")`)
@@ -188,24 +235,15 @@ export function parseAndValidateCsv(text, months, { mode = 'submit', quorumCells
         fail('value', `value must be a non-negative integer with no sign, decimal, or separators (got "${valueRaw}")`)
       } else {
         value = BigInt(valueRaw)
-        const q = quorumCells?.get(`${country}|${monthDate}|${indicator}|${segment}`)
-        const mustBeZero = q ? (!q.participates || q.ignored) : false
         if (value > LONG_MAX) fail('value', 'value exceeds the maximum 64-bit integer')
-        else if (mustBeZero && value !== 0n) {
-          fail('value', q.ignored
-            ? 'this metric fell below the quorum and is ignored; value must be 0'
-            : 'you declined this metric in the Quorum Check; value must be 0')
-        } else if (!mustBeZero && value === 0n) {
+        else if (value === 0n) {
           fail('value', quorumCells ? 'you agreed to participate in this metric; value cannot be 0' : 'value cannot be 0')
         }
       }
     }
 
-    const key = `${country}|${monthDate}|${indicator}|${segment}`
     if (!rowOk) {
-      if (monthSet.has(monthDate) && COUNTRY_SET.has(country) && SERIES_SET.has(`${indicator}|${segment}`)) {
-        coveredInvalid.add(key)
-      }
+      if (requiredKeys.has(key)) coveredInvalid.add(key)
       continue
     }
 
@@ -222,7 +260,9 @@ export function parseAndValidateCsv(text, months, { mode = 'submit', quorumCells
 
   const presentMonths = new Set(parsed.map((r) => r.month))
   for (const key of coveredInvalid) presentMonths.add(key.split('|')[1])
-  const missingMonths = months.filter((m) => !presentMonths.has(m))
+  // Only months with at least one required cell can be missing
+  const requiredMonths = new Set([...requiredKeys].map((k) => k.split('|')[1]))
+  const missingMonths = months.filter((m) => requiredMonths.has(m) && !presentMonths.has(m))
   if (foreignMonths.size > 0) {
     add(null, null, `month_date values ${[...foreignMonths].sort().join(', ')} do not belong to this epoch; use ${months.join(', ')}`)
   }
@@ -232,25 +272,19 @@ export function parseAndValidateCsv(text, months, { mode = 'submit', quorumCells
 
   const missingMonthSet = new Set(missingMonths)
   const missingCells = []
-  for (const country of COUNTRIES) {
-    for (const month of months) {
-      if (missingMonthSet.has(month)) continue
-      for (const [indicator, segment] of SERIES) {
-        const key = `${country}|${month}|${indicator}|${segment}`
-        if (!seen.has(key) && !coveredInvalid.has(key)) {
-          missingCells.push({ country, month, indicator, segment })
-        }
-      }
-    }
+  for (const c of requiredCsvCells(months, quorumCells)) {
+    if (missingMonthSet.has(c.month)) continue
+    const key = cellKey(c.country, c.month, c.indicator, c.segment)
+    if (!seen.has(key) && !coveredInvalid.has(key)) missingCells.push(c)
   }
 
-  if (dataRowCount > 0 && (dataRowCount !== CELL_COUNT || duplicateCount > 0 || missingCells.length > 0 || missingMonths.length > 0)) {
-    const parts = [`File has ${dataRowCount} data row(s) (expected ${CELL_COUNT}): ${parsed.length} valid unique`]
+  if (dataRowCount > 0 && (dataRowCount !== expectedCount || duplicateCount > 0 || missingCells.length > 0 || missingMonths.length > 0)) {
+    const parts = [`File has ${dataRowCount} data row(s) (expected ${expectedCount}): ${parsed.length} valid unique`]
     if (duplicateCount > 0) parts.push(`${duplicateCount} duplicate`)
     const invalid = dataRowCount - parsed.length - duplicateCount
     if (invalid > 0) parts.push(`${invalid} invalid`)
     let summary = parts.join(', ') + '.'
-    const missingTotal = CELL_COUNT - parsed.length - [...coveredInvalid].filter((k) => !seen.has(k)).length
+    const missingTotal = expectedCount - parsed.length - [...coveredInvalid].filter((k) => !seen.has(k)).length
     if (missingTotal > 0) summary += ` ${missingTotal} required cell(s) not covered.`
     add(null, null, summary)
   }
@@ -266,7 +300,7 @@ export function parseAndValidateCsv(text, months, { mode = 'submit', quorumCells
   }))
 
   return {
-    ok: errors.length === 0 && rows.length === CELL_COUNT,
+    ok: errors.length === 0 && rows.length === expectedCount,
     errors,
     rows,
     preview,

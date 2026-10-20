@@ -10,6 +10,10 @@ import {
   emptyCsvResult,
   rewriteSampleMonths,
   quorumSampleCsv,
+  requiredCsvCells,
+  autoZeroCells,
+  isCsvCell,
+  cellKey,
   CELL_COUNT,
   COUNTRIES,
   SERIES,
@@ -458,7 +462,15 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
       }
       const res = await fetch('/sample.csv')
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      // Leave out declined and below-quorum rows; they must not be in the upload
       const text = rewriteSampleMonths(await res.text(), months)
+        .split('\n')
+        .filter((line, i) => {
+          if (i === 0 || line.trim() === '') return true
+          const [month, country, indicator, segment] = line.split(',').map((c) => c.trim())
+          return isCsvCell(quorumCells, cellKey(country, month, indicator, segment))
+        })
+        .join('\n')
       const url = URL.createObjectURL(new Blob([text], { type: 'text/csv' }))
       const a = document.createElement('a')
       a.href = url
@@ -512,8 +524,12 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
         onRefresh?.()
         return
       }
+      // Declined cells that met the quorum get a masked 0 so every partner's masks still cancel
+      const zeroRows = autoZeroCells(epochMonths(epoch), quorumCells)
+        .filter((c) => !submittedCells.has(cellKey(c.country, c.month, c.indicator, c.segment)))
+        .map((c) => ({ ...c, value: 0n }))
       const payload = []
-      for (const row of csvResult.rows) {
+      for (const row of [...csvResult.rows, ...zeroRows]) {
         const masked = await calculateMaskedValue(
           row.value, row.country, row.month, row.indicator, row.segment, myId, sharedSecrets
         )
@@ -527,8 +543,8 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
           signature: 'web-ui',
         })
       }
-      log('submit batch', { rows: payload.length, epochId })
-      await api.submitMetricsBatch(payload, token)
+      log('submit batch', { rows: payload.length, autoZeros: zeroRows.length, epochId })
+      if (payload.length > 0) await api.submitMetricsBatch(payload, token)
       const done = new Set(payload.map((s) => `${s.country}|${s.month}|${s.indicator}|${s.segment}`))
       setSubmittedCells((p) => new Set([...p, ...done]))
       log('submit batch ok', { cells: done.size })
@@ -711,7 +727,11 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
 
   const renderSubmit = () => {
     const months = epochMonths(epoch) ?? []
-    const allDone = quorumMode ? !!quorum?.myDone : submittedCells.size >= CELL_COUNT
+    const ignoredCount = quorumCells ? [...quorumCells.values()].filter((c) => c.ignored).length : 0
+    // Server-side count: CSV rows plus automatic zeros; below-quorum cells get no data
+    const serverCellCount = CELL_COUNT - ignoredCount
+    const csvCellCount = requiredCsvCells(months, quorumCells).length
+    const allDone = quorumMode ? !!quorum?.myDone : submittedCells.size >= serverCellCount
     const errors = csvResult?.errors ?? []
     const fileErrors = errors.filter((e) => !e.record)
     const rowErrors = errors.filter((e) => e.record)
@@ -733,7 +753,8 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
           <div className="info-box">
             Fill the same CSV format, but set <code>value</code> to <strong>1</strong> if you will participate in
             that metric or <strong>0</strong> if you will not. A metric needs at least 3 participants or it is
-            ignored. You must then submit 0 for every metric you declined here. Answers are masked in your
+            ignored. Leave declined metrics out of your data upload; your browser submits 0 for them so the masks
+            still cancel. Metrics under 3 participants get no data. Answers are masked in your
             browser with the shared secrets, so the aggregator only learns totals, and cannot be changed.
           </div>
         ) : (
@@ -743,15 +764,16 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
           {months.length > 0 && (
             <div style={{ marginTop: 8 }}>
               Required <code>month_date</code> values: <strong>{months.join(', ')}</strong>. The file must have
-              exactly {CELL_COUNT} data rows ({COUNTRIES.length} countries × {months.length} months × {SERIES.length} series),
+              exactly {csvCellCount} data rows
+              {csvCellCount === CELL_COUNT && <> ({COUNTRIES.length} countries × {months.length} months × {SERIES.length} series)</>},
               one per cell, with no duplicates.
             </div>
           )}
           {quorumCells && (
             <div style={{ marginTop: 8 }}>
-              Submit <strong>0</strong> for metrics you declined
-              ({[...quorumCells.values()].filter((c) => !c.participates).length}) and for metrics that fell below
-              the quorum ({[...quorumCells.values()].filter((c) => c.participates && c.ignored).length}).
+              Include only the metrics you participate in. Leave out metrics you declined
+              ({[...quorumCells.values()].filter((c) => !c.participates && !c.ignored).length}) — 0 is submitted
+              for them automatically — and metrics that fell below the quorum ({ignoredCount}), which get no data at all.
             </div>
           )}
         </div>
@@ -767,7 +789,7 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
           <div className="info-box ok">
             {quorumMode
               ? `✅ Quorum Check submitted. Waiting for the remaining partners (${quorum?.answeredPartners ?? 0}/${quorum?.partnerCount ?? producerCount})…`
-              : `✅ All ${CELL_COUNT} cells submitted. Waiting for the remaining producers…`}
+              : `✅ All ${serverCellCount} cells submitted. Waiting for the remaining producers…`}
           </div>
         ) : (
           <>
@@ -878,7 +900,7 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
             {csvResult?.ok && (
               <>
                 <div className="info-box ok">
-                  Valid file: {CELL_COUNT} cells covering {months.join(', ')}.
+                  Valid file: {csvCellCount} cells covering {months.join(', ')}.
                 </div>
                 <div style={{ overflowX: 'auto', marginBottom: '1rem' }}>
                   <table className="results-table">
@@ -905,7 +927,7 @@ export default function EpochProtocol({ epoch, onRefresh, onKeyStatusChange, isA
                   </table>
                 </div>
                 <div className="text-muted" style={{ fontSize: '0.8rem', marginBottom: '1rem' }}>
-                  Showing first {csvResult.preview.length} of {CELL_COUNT} rows
+                  Showing first {csvResult.preview.length} of {csvCellCount} rows
                 </div>
               </>
             )}
