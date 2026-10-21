@@ -11,6 +11,9 @@ export function getDeviceId() {
   return id
 }
 
+// Storage scope for a key exchange: the epoch id, or "p<periodId>" for a Quorum Check period
+export const scopeKeyOf = (scope) => (scope.periodId ? `p${scope.periodId}` : scope.epochId)
+
 const scoped = (id, epochId, deviceId) => `${id}_${epochId}_${deviceId}`
 export const kpKey = (id, epochId, deviceId) => `mlkem_kp_${scoped(id, epochId, deviceId)}`
 export const ssKey = (id, epochId, deviceId) => `mlkem_ss_${scoped(id, epochId, deviceId)}`

@@ -1,11 +1,14 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Routes, Route, NavLink, Navigate } from 'react-router-dom'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { useIsAuthenticated, useMsal } from '@azure/msal-react'
 import Home from './pages/Home'
+import AllEpochs from './pages/AllEpochs'
+import EpochPage from './pages/EpochPage'
+import QuorumPage from './pages/QuorumPage'
 import AdminPanel from './pages/AdminPanel'
+import { ShellContext } from './components/Shell'
 import { loginRequest, apiTokenRequest } from './authConfig'
 import * as api from './utils/api'
-import { APP_VERSION } from './version'
 
 const ADMIN_GROUP = import.meta.env.VITE_ADMIN_GROUP_ID
 
@@ -16,6 +19,16 @@ function parseGroups(accessToken) {
     return payload.groups ?? []
   } catch {
     return []
+  }
+}
+
+// Name and organization for the nav; the organization comes from the optional companyName claim
+function userOf(account) {
+  const claims = account?.idTokenClaims ?? {}
+  const email = account?.username || claims.preferred_username || claims.email || ''
+  return {
+    name: account?.name || claims.name || email,
+    org: claims.companyName || email.split('@')[1] || '',
   }
 }
 
@@ -60,72 +73,45 @@ function App() {
     register()
   }, [isAuthenticated, account?.homeAccountId, role, register])
 
-  const handleLogin = () => instance.loginRedirect(loginRequest)
-  const handleLogout = () => instance.logoutRedirect()
-  const email = account?.username
-    || account?.idTokenClaims?.preferred_username
-    || account?.idTokenClaims?.email
-    || ''
+  // On a page change: back to the top, and focus the page heading for screen readers
+  const location = useLocation()
+  const lastPath = useRef(null)
+  useEffect(() => {
+    if (lastPath.current !== null && lastPath.current !== location.pathname) {
+      window.scrollTo(0, 0)
+      document.querySelector('#main h1')?.focus({ preventScroll: true })
+    }
+    lastPath.current = location.pathname
+  }, [location.pathname])
+
+  const shell = {
+    signedIn: isAuthenticated,
+    user: userOf(account),
+    isAdmin,
+    roleKnown: role !== 'unknown',
+    registration,
+    retryRegistration: register,
+    signIn: () => instance.loginRedirect(loginRequest),
+    signOut: () => instance.logoutRedirect(),
+  }
+
+  const signedIn = (page) => (isAuthenticated ? page : <Navigate to="/" replace />)
 
   return (
-    <div className="app">
-      <nav className="navbar">
-        <div className="navbar-content">
-          <NavLink to="/" className="logo">
-            <span className="logo-icon">🔐</span>
-            AI Roundtable
-            <span className="app-version">{APP_VERSION}</span>
-          </NavLink>
-          <div className="nav-links">
-            <NavLink to="/" end className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
-              Home
-            </NavLink>
-            {isAdmin && (
-              <NavLink to="/admin" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
-                Admin
-              </NavLink>
-            )}
-          </div>
-          <div className="nav-auth">
-            {isAuthenticated ? (
-              <>
-                {registration.state === 'pending' && <span className="status-badge pending">Registering…</span>}
-                {registration.state === 'ok' && <span className="status-badge success">Registered</span>}
-                {registration.state === 'error' && (
-                  <button
-                    className="status-badge error"
-                    onClick={register}
-                    title={registration.error ?? ''}
-                    style={{ border: 'none', cursor: 'pointer' }}
-                  >
-                    Registration failed · Retry
-                  </button>
-                )}
-                <span className="nav-user" title={email}>{email}</span>
-                <button className="btn btn-secondary nav-btn" onClick={handleLogout}>Sign out</button>
-              </>
-            ) : (
-              <button className="btn btn-primary nav-btn" onClick={handleLogin}>Sign in</button>
-            )}
-          </div>
-        </div>
-      </nav>
-
-      <main className="main-content">
+    <ShellContext.Provider value={shell}>
+      <div id="app">
         <Routes>
-          <Route path="/" element={<Home isAdmin={isAdmin} roleKnown={role !== 'unknown'} />} />
-          <Route path="/admin" element={isAuthenticated ? <AdminPanel /> : <Navigate to="/" replace />} />
+          <Route path="/" element={<Home />} />
+          <Route path="/epochs" element={signedIn(<AllEpochs />)} />
+          <Route path="/quorum" element={signedIn(<QuorumPage />)} />
+          <Route path="/api" element={signedIn(<EpochPage usageType="api" />)} />
+          <Route path="/chat" element={signedIn(<EpochPage usageType="chat" />)} />
+          <Route path="/admin" element={signedIn(role === 'unknown' ? null : isAdmin ? <AdminPanel /> : <Navigate to="/" replace />)} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
-      </main>
-
-      <footer className="site-footer">
-        <div className="footer-bottom">
-          <span>AI Roundtable</span>
-          <span className="app-version">{APP_VERSION}</span>
-        </div>
-      </footer>
-    </div>
+      </div>
+      <div id="live" className="sr-only" role="status" aria-live="polite" />
+    </ShellContext.Provider>
   )
 }
 

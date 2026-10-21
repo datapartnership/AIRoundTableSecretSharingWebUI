@@ -44,52 +44,52 @@ async function post(path, body, token) {
 
 // ── Registry ──────────────────────────────────────────────────────────────────
 export const getProducers = (token) => get('/registry/producers', token)
-export const getEpoch = (token) => get('/registry/epoch', token)
 export const getEpochs = (token) => get('/registry/epochs', token)
 export const selfRegister = (token) => post('/registry/producers/me', {}, token)
 
 // ── Key Exchange ──────────────────────────────────────────────────────────────
-export const registerPublicKey = (epochId, deviceId, publicKeyBase64, token) =>
-  post('/keyexchange/register', { epochId, deviceId, publicKeyBase64 }, token)
+// `scope` is { epochId } for an epoch or { periodId } for a Quorum Check period.
+const scopeQuery = (scope, deviceId) =>
+  new URLSearchParams({ ...Object.fromEntries(Object.entries(scope).map(([k, v]) => [k, String(v)])), deviceId }).toString()
 
-export const rotatePublicKey = (epochId, deviceId, publicKeyBase64, token) =>
-  post('/keyexchange/rotate', { epochId, deviceId, publicKeyBase64 }, token)
+export const registerPublicKey = (scope, deviceId, publicKeyBase64, token) =>
+  post('/keyexchange/register', { ...scope, deviceId, publicKeyBase64 }, token)
 
-export const getPartnerKeys = (epochId, deviceId, token) =>
-  get(`/keyexchange/keys?epochId=${encodeURIComponent(epochId)}&deviceId=${encodeURIComponent(deviceId)}`, token)
+export const rotatePublicKey = (scope, deviceId, publicKeyBase64, token) =>
+  post('/keyexchange/rotate', { ...scope, deviceId, publicKeyBase64 }, token)
 
-export const getKeyExchangeStatus = (epochId, deviceId, token) =>
-  get(`/keyexchange/status?epochId=${encodeURIComponent(epochId)}&deviceId=${encodeURIComponent(deviceId)}`, token)
+export const getPartnerKeys = (scope, deviceId, token) =>
+  get(`/keyexchange/keys?${scopeQuery(scope, deviceId)}`, token)
+
+export const getKeyExchangeStatus = (scope, deviceId, token) =>
+  get(`/keyexchange/status?${scopeQuery(scope, deviceId)}`, token)
 
 // ── Ciphertexts ───────────────────────────────────────────────────────────────
-export const postCiphertext = (epochId, deviceId, recipientId, recipientDeviceId, ciphertextBase64, token) =>
-  post('/ciphertext', { epochId, deviceId, recipientId, recipientDeviceId, ciphertextBase64 }, token)
+export const postCiphertext = (scope, deviceId, recipientId, recipientDeviceId, ciphertextBase64, token) =>
+  post('/ciphertext', { ...scope, deviceId, recipientId, recipientDeviceId, ciphertextBase64 }, token)
 
-export const getCiphertexts = (epochId, deviceId, token) =>
-  get(`/ciphertext?epochId=${encodeURIComponent(epochId)}&deviceId=${encodeURIComponent(deviceId)}`, token)
+export const getCiphertexts = (scope, deviceId, token) =>
+  get(`/ciphertext?${scopeQuery(scope, deviceId)}`, token)
 
-export const getSentCiphertexts = (epochId, deviceId, token) =>
-  get(`/ciphertext/sent?epochId=${encodeURIComponent(epochId)}&deviceId=${encodeURIComponent(deviceId)}`, token)
+export const getSentCiphertexts = (scope, deviceId, token) =>
+  get(`/ciphertext/sent?${scopeQuery(scope, deviceId)}`, token)
 
 // ── Metrics ───────────────────────────────────────────────────────────────────
 export const getMySubmissions = (epochId, token) =>
   get(`/metrics/mysubmissions?epochId=${encodeURIComponent(epochId)}`, token)
 
-export const submitMetric = (submission, token) =>
-  post('/metrics/submit', submission, token)
-
 export const submitMetricsBatch = (submissions, token) =>
   post('/metrics/submit-batch', submissions, token)
 
-export const getAggregate = (country, month, indicator, segment, token) =>
-  get(`/metrics/aggregate?country=${encodeURIComponent(country)}&month=${encodeURIComponent(month)}&indicator=${encodeURIComponent(indicator)}&segment=${encodeURIComponent(segment)}`, token)
-
 // ── Quorum Check ──────────────────────────────────────────────────────────────
-export const getQuorumStatus = (epochId, token) =>
-  get(`/quorum/status?epochId=${encodeURIComponent(epochId)}`, token)
+export const getQuorumCurrent = (usageType, token) =>
+  get(`/quorum/current?usageType=${encodeURIComponent(usageType)}`, token)
 
-export const submitQuorumBatch = (rows, token) =>
-  post('/quorum/submit-batch', rows, token)
+export const getQuorumPeriod = (periodId, token) =>
+  get(`/quorum/periods/${encodeURIComponent(periodId)}`, token)
+
+export const submitQuorum = (periodId, answers, token) =>
+  post('/quorum/submit', { periodId, answers }, token)
 
 // ── Admin ─────────────────────────────────────────────────────────────────────
 export const adminReset = (token) => post('/admin/reset', {}, token)
@@ -106,3 +106,10 @@ export const adminCancelEpoch = (epochId, reason, token) =>
 
 export const adminRecreateEpoch = (epochId, reason, token) =>
   post(`/admin/epochs/${epochId}/recreate`, { reason }, token)
+
+export const adminGetQuorumPeriods = (token) => get('/admin/quorum-periods', token)
+
+export const adminCreateQuorumPeriod = (body, token) => post('/admin/quorum-periods', body, token)
+
+export const adminCancelQuorumPeriod = (periodId, reason, token) =>
+  post(`/admin/quorum-periods/${periodId}/cancel`, { reason }, token)
