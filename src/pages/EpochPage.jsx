@@ -132,6 +132,7 @@ function EpochView({ u, epoch, isAdmin }) {
   // Metrics below the quorum get no data, so the partner owes the rest
   const ignoredCellCount = months.length * [...quorumRules.ignoredPairs].reduce((n, k) => n + SEGMENTS_BY_INDICATOR[k.split('|')[1]].length, 0)
   const owed = CELL_COUNT - ignoredCellCount
+  const belowQuorumText = [...quorumRules.ignoredPairs].map((k) => k.replace('|', ' ')).join(', ')
   const allSubmitted = epoch.mySubmissionComplete || (submitted && submitted.keys.size >= owed && owed > 0)
 
   // ── Upload and submit ────────────────────────────────────────────────────────
@@ -168,13 +169,15 @@ function EpochView({ u, epoch, isAdmin }) {
     try {
       const res = await fetch('/sample.csv')
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      // Unticked metrics carry 0, so the sample passes the check as it is
+      // Unticked metrics carry 0 and metrics below the quorum are left out, so the sample passes the check as it is
       const text = rewriteSampleMonths(await res.text(), months)
         .split('\n')
-        .map((line, i) => {
-          if (i === 0 || line.trim() === '') return line
+        .flatMap((line, i) => {
+          if (i === 0 || line.trim() === '') return [line]
           const cols = line.split(',')
-          return valueRule(quorumRules, cols[1], cols[2]) === 'zero' ? [...cols.slice(0, 4), '0'].join(',') : line
+          const rule = valueRule(quorumRules, cols[1], cols[2])
+          if (rule === 'ignored') return []
+          return [rule === 'zero' ? [...cols.slice(0, 4), '0'].join(',') : line]
         })
         .join('\n')
       download(`sample-${months[0]}.csv`, text)
@@ -297,7 +300,7 @@ function EpochView({ u, epoch, isAdmin }) {
             <p className="leave">Keep this page open until this step is done. Use this browser until the epoch ends. Your key exists only in this browser.</p>
           </PartNow>
           <Sec h={SEC_FILE}>
-            <p>Checking opens when every partner in the epoch has finished step 2. You can prepare your file now. It needs {CELL_COUNT} rows: {COUNTRIES.length} countries, {CELL_COUNT / COUNTRIES.length / 4} series, months {monthRange(epoch.startDate, 4)}.</p>
+            <p>Checking opens when every partner in the epoch has finished step 2. You can prepare your file now. It needs {owed} rows: {COUNTRIES.length} countries, {CELL_COUNT / COUNTRIES.length / 4} series, months {monthRange(epoch.startDate, 4)}{belowQuorumText ? `, without the metrics below the quorum: ${belowQuorumText}` : ''}.</p>
             <div className="actions">
               <button className="btn btn-primary" disabled aria-describedby="why-check">Upload file</button>
               <button className="btn btn-secondary" onClick={downloadSample}>Download sample.csv</button>
@@ -382,7 +385,7 @@ function EpochView({ u, epoch, isAdmin }) {
     content = (
       <>
         <Sec h={SEC_FILE}>
-          <p>Expecting monthly token data for {COUNTRIES.length} countries, {ACCESS.length} model access types and {REGIONS.length} model regions of origin.{epoch.quorumPeriodId ? ' Report values for the metrics you ticked in the Quorum Check, and enter 0 for the others.' : ''}</p>
+          <p>Expecting monthly token data for {COUNTRIES.length} countries, {ACCESS.length} model access types and {REGIONS.length} model regions of origin.{epoch.quorumPeriodId ? ' Report values for the metrics you ticked in the Quorum Check, and enter 0 for the others.' : ''}{belowQuorumText ? ` Leave out the metrics below the quorum: ${belowQuorumText}. The file needs ${owed} rows.` : ''}</p>
           <div className="actions"><button className="btn btn-primary" onClick={choose}>Upload file</button><button className="btn btn-secondary" onClick={downloadSample}>Download sample.csv</button></div>
         </Sec>
         <SubmitDisabled />

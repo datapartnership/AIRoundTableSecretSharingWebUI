@@ -103,6 +103,13 @@ export function allCells(months) {
   return cells
 }
 
+/** The cells a partner owes: every cell except those of metrics below the quorum. */
+export function requiredCells(months, quorum = null) {
+  const ignored = quorum?.ignoredPairs
+  const cells = allCells(months)
+  return ignored?.size ? cells.filter((c) => !ignored.has(pairKey(c.country, c.indicator))) : cells
+}
+
 /** What a value must be for a metric, given the partner's Quorum Check answers. */
 export function valueRule(quorum, country, indicator) {
   const key = pairKey(country, indicator)
@@ -114,14 +121,15 @@ export function valueRule(quorum, country, indicator) {
 }
 
 const fileFailure = (kind, extra = {}) => ({
-  ok: false, fileError: { kind, ...extra }, errors: [], rows: [], missingCells: [], dataRowCount: 0, readyCount: 0, badRowCount: 0,
+  ok: false, fileError: { kind, ...extra }, errors: [], rows: [], missingCells: [], required: CELL_COUNT, dataRowCount: 0, readyCount: 0, badRowCount: 0,
 })
 
 /**
- * Validates a data CSV for an epoch. The file has one row per country, month and series (all 200).
+ * Validates a data CSV for an epoch. The file has one row per country, month and series (200), except
+ * for metrics below the quorum, which must have no rows.
  * `quorum` = { answers: Map("country|indicator" -> ticked), ignoredPairs: Set("country|indicator") }:
- * a ticked metric needs values above 0, an unticked one 0, and rows of metrics below the quorum are
- * accepted but dropped before submission. Without answers (another browser answered), any whole number is accepted.
+ * a ticked metric needs values above 0, an unticked one 0, and a row of a metric below the quorum is
+ * an error. Without answers (another browser answered), any whole number is accepted.
  *
  * Errors carry a `kind` so the file check can group them (see fileCheck.js).
  */
@@ -172,20 +180,26 @@ export function parseAndValidateCsv(text, months, quorum = null) {
     const { month_date: month, country_iso3: country, indicator, segment, value: raw } = record
     const errBefore = errors.length
 
+    const countryOk = COUNTRY_SET.has(country)
+    const indicatorOk = INDICATOR_SET.has(indicator)
+    const rule = countryOk && indicatorOk ? valueRule(quorum, country, indicator) : 'any'
+    // The whole row has to go, so its other fields don't matter
+    if (rule === 'ignored') {
+      add('below-quorum', rowNum, 'indicator', `${country}, ${indicator}`, record, { country, indicator })
+      continue
+    }
+
     const monthOk = MONTH_RE.test(month) && monthSet.has(month)
     if (!MONTH_RE.test(month)) add('month-format', rowNum, 'month_date', month, record)
     else if (!monthSet.has(month)) add('month-foreign', rowNum, 'month_date', month, record)
 
-    const countryOk = COUNTRY_SET.has(country)
     if (!countryOk) add('country', rowNum, 'country_iso3', country, record)
 
-    const indicatorOk = INDICATOR_SET.has(indicator)
     const segmentOk = indicatorOk && SEGMENTS_BY_INDICATOR[indicator].includes(segment)
     if (!indicatorOk) add('indicator', rowNum, 'indicator', indicator, record)
     else if (!segmentOk) add('segment', rowNum, 'segment', segment, record)
 
     let value = null
-    const rule = countryOk && indicatorOk ? valueRule(quorum, country, indicator) : 'any'
     if (raw === '') add('value-empty', rowNum, 'value', raw, record)
     else if (!VALUE_RE.test(raw) || BigInt(raw) > LONG_MAX) add('value', rowNum, 'value', raw, record, { rule })
     else {
@@ -216,7 +230,8 @@ export function parseAndValidateCsv(text, months, quorum = null) {
     if (errors.length === errBefore) parsed.push({ rowNum, month, country, indicator, segment, value })
   }
 
-  const uncovered = allCells(months).filter((c) => !exact.has(cellKey(c.country, c.month, c.indicator, c.segment)))
+  const required = requiredCells(months, quorum)
+  const uncovered = required.filter((c) => !exact.has(cellKey(c.country, c.month, c.indicator, c.segment)))
   for (const w of wildcards) {
     const i = uncovered.findIndex((c) => ['country', 'month', 'indicator', 'segment'].every((k) => w[k] == null || w[k] === c[k]))
     if (i >= 0) uncovered.splice(i, 1)
@@ -227,9 +242,9 @@ export function parseAndValidateCsv(text, months, quorum = null) {
     ok,
     fileError: null,
     errors,
-    // Metrics below the quorum get no data at all
-    rows: ok ? parsed.filter((r) => valueRule(quorum, r.country, r.indicator) !== 'ignored') : [],
+    rows: ok ? parsed : [],
     missingCells: uncovered,
+    required: required.length,
     dataRowCount,
     readyCount: dataRowCount - badRows.size,
     badRowCount: badRows.size,

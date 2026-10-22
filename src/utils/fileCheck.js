@@ -9,7 +9,9 @@ const MISSING_SUMMARY_COLS = ['country_iso3', 'month_date', 'series', 'missing r
 const HEADER = HEADERS.join(',')
 
 const ACC_NUM = 'Accepted: numeric values above 0 without special characters.'
-const ACC_ALL = `Accepted: one row for each country, month, and series: ${COUNTRIES.length} countries x 4 months x ${SERIES.length} series = ${CELL_COUNT} rows.`
+const accAll = (required = CELL_COUNT) => required === CELL_COUNT
+  ? `Accepted: one row for each country, month, and series: ${COUNTRIES.length} countries x 4 months x ${SERIES.length} series = ${CELL_COUNT} rows.`
+  : `Accepted: one row for each country, month, and series of the metrics that met the quorum: ${required} rows. Metrics below the quorum have no rows.`
 const ACC_DUP = 'Accepted: each combination of month, country, indicator, and segment one time only.'
 const FIX_DUP = 'Keep one row for this combination, with the correct value, and delete the other.'
 const FIX_MISS = 'Add one row for each missing combination, with its value.'
@@ -53,15 +55,15 @@ function group(what, where, accepted, fix, errors, column, extra = {}) {
 }
 
 // Missing combinations: listed one by one when few, otherwise summarised per country and month
-function missingGroup(missing, months, found) {
+function missingGroup(missing, months, found, required) {
   const n = missing.length
   const what = `${n} ${plural(n, 'combination', 'combinations')}${n <= 3 ? ' of country, month, and series' : ''} ${plural(n, 'is', 'are')} missing`
   if (n <= 3) {
     return {
       what,
       report: missing.map((c) => ['', '', `${c.month} ${c.country} ${c.indicator} ${c.segment}`]),
-      where: `Found: ${found} of ${CELL_COUNT} combinations. The ${n === 1 ? 'missing combination is' : `${n} missing combinations are`} below.`,
-      accepted: ACC_ALL, fix: FIX_MISS, cols: MISSING_COLS, bad: -1,
+      where: `Found: ${found} of ${required} combinations. The ${n === 1 ? 'missing combination is' : `${n} missing combinations are`} below.`,
+      accepted: accAll(required), fix: FIX_MISS, cols: MISSING_COLS, bad: -1,
       rows: missing.map((c) => [c.month, c.country, c.indicator, c.segment]),
     }
   }
@@ -84,8 +86,8 @@ function missingGroup(missing, months, found) {
   return {
     what,
     report: missing.map((c) => ['', '', `${c.month} ${c.country} ${c.indicator} ${c.segment}`]),
-    where: `${columns.length ? `Column${columns.length > 1 ? 's' : ''} ${listAnd(columns)}. ` : ''}Found: ${found} of ${CELL_COUNT} combinations. The ${n} missing rows are summarized below. The problem report lists each row.`,
-    accepted: ACC_ALL, fix: FIX_MISS, cols: MISSING_SUMMARY_COLS, bad: -1, rows,
+    where: `${columns.length ? `Column${columns.length > 1 ? 's' : ''} ${listAnd(columns)}. ` : ''}Found: ${found} of ${required} combinations. The ${n} missing rows are summarized below. The problem report lists each row.`,
+    accepted: accAll(required), fix: FIX_MISS, cols: MISSING_SUMMARY_COLS, bad: -1, rows,
   }
 }
 
@@ -126,6 +128,16 @@ export function buildFileCheck(result, months, fileName) {
       `${where('value', notZero)}. Found: ${foundValues(notZero.map((e) => e.found))}.`,
       'Accepted: 0 for each metric you did not tick in the Quorum Check.',
       'Enter 0 for these rows. If your Quorum Check answers were wrong, contact the platform administrator.', notZero, 'value'))
+  }
+
+  const belowQuorum = by('below-quorum')
+  if (belowQuorum.length) {
+    const rows = belowQuorum.map((e) => e.row)
+    groups.push(group(`${belowQuorum.length} ${plural(belowQuorum.length, 'row is for a metric', 'rows are for metrics')} below the quorum`,
+      `Columns country_iso3 and indicator, ${rowList(rows, dataRowCount)}. Found: ${foundValues(belowQuorum.map((e) => e.found), true)}.`,
+      'Accepted: no rows for a metric that fewer than 3 partners take part in. These metrics are below the quorum and get no data.',
+      'Delete these rows. Do not submit data for metrics below the quorum. The sample file already leaves them out.',
+      belowQuorum, 'indicator'))
   }
 
   const fmt = by('month-format')
@@ -183,7 +195,8 @@ export function buildFileCheck(result, months, fileName) {
       cols.map((e) => ({ ...e, record: Object.fromEntries(HEADERS.map((h, i) => [h, e.record[h] || (i >= e.found ? '(none)' : '')])) })), null))
   }
 
-  if (missingCells.length) groups.push(missingGroup(missingCells, months, CELL_COUNT - missingCells.length))
+  const required = result.required ?? CELL_COUNT
+  if (missingCells.length) groups.push(missingGroup(missingCells, months, required - missingCells.length, required))
 
   // The summary line, as on page 06
   const parts = []
