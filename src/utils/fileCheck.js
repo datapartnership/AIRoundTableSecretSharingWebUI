@@ -1,6 +1,6 @@
 // Turns validator output (csvUpload.js) into the file-check screens of the wireframe (page 06, S1 to S18):
 // a summary line, problem groups with what / where / accepted / fix and example rows, or a Blocked state.
-import { COUNTRIES, HEADERS, INDICATORS, SEGMENTS_BY_INDICATOR, SERIES, CELL_COUNT } from './csvUpload'
+import { COUNTRIES, HEADERS, INDICATORS, SEGMENTS_BY_INDICATOR, SERIES, cellCount } from './csvUpload'
 import { monthRange } from './usage'
 
 export const EXAMPLE_COLS = ['row', ...HEADERS]
@@ -9,8 +9,8 @@ const MISSING_SUMMARY_COLS = ['country_iso3', 'month_date', 'series', 'missing r
 const HEADER = HEADERS.join(',')
 
 const ACC_NUM = 'Accepted: numeric values above 0 without special characters.'
-const accAll = (required = CELL_COUNT) => required === CELL_COUNT
-  ? `Accepted: one row for each country, month, and series: ${COUNTRIES.length} countries x 4 months x ${SERIES.length} series = ${CELL_COUNT} rows.`
+const accAll = (required, months) => required === cellCount(months.length)
+  ? `Accepted: one row for each country, month, and series: ${COUNTRIES.length} countries x ${months.length} months x ${SERIES.length} series = ${required} rows.`
   : `Accepted: one row for each country, month, and series of the metrics that met the quorum: ${required} rows. Metrics below the quorum have no rows.`
 const ACC_DUP = 'Accepted: each combination of month, country, indicator, and segment one time only.'
 const FIX_DUP = 'Keep one row for this combination, with the correct value, and delete the other.'
@@ -63,7 +63,7 @@ function missingGroup(missing, months, found, required) {
       what,
       report: missing.map((c) => ['', '', `${c.month} ${c.country} ${c.indicator} ${c.segment}`]),
       where: `Found: ${found} of ${required} combinations. The ${n === 1 ? 'missing combination is' : `${n} missing combinations are`} below.`,
-      accepted: accAll(required), fix: FIX_MISS, cols: MISSING_COLS, bad: -1,
+      accepted: accAll(required, months), fix: FIX_MISS, cols: MISSING_COLS, bad: -1,
       rows: missing.map((c) => [c.month, c.country, c.indicator, c.segment]),
     }
   }
@@ -87,7 +87,7 @@ function missingGroup(missing, months, found, required) {
     what,
     report: missing.map((c) => ['', '', `${c.month} ${c.country} ${c.indicator} ${c.segment}`]),
     where: `${columns.length ? `Column${columns.length > 1 ? 's' : ''} ${listAnd(columns)}. ` : ''}Found: ${found} of ${required} combinations. The ${n} missing rows are summarized below. The problem report lists each row.`,
-    accepted: accAll(required), fix: FIX_MISS, cols: MISSING_SUMMARY_COLS, bad: -1, rows,
+    accepted: accAll(required, months), fix: FIX_MISS, cols: MISSING_SUMMARY_COLS, bad: -1, rows,
   }
 }
 
@@ -195,7 +195,7 @@ export function buildFileCheck(result, months, fileName) {
       cols.map((e) => ({ ...e, record: Object.fromEntries(HEADERS.map((h, i) => [h, e.record[h] || (i >= e.found ? '(none)' : '')])) })), null))
   }
 
-  const required = result.required ?? CELL_COUNT
+  const required = result.required ?? cellCount(months.length)
   if (missingCells.length) groups.push(missingGroup(missingCells, months, required - missingCells.length, required))
 
   // The summary line, as on page 06

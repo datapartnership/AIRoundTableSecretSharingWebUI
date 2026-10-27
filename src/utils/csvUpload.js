@@ -13,8 +13,10 @@ export const SERIES = [
 ]
 // Quorum Check grid: one answer per country and indicator; it applies to every month and segment
 export const INDICATORS = [...new Set(SERIES.map(([i]) => i))]
-export const MONTH_COUNT = 4
-export const CELL_COUNT = COUNTRIES.length * MONTH_COUNT * SERIES.length
+// New epochs report a quarter; epochs created before quarterly epochs report 4 months
+export const QUARTER_MONTHS = 3
+export const monthCount = (epoch) => epoch?.monthCount || QUARTER_MONTHS
+export const cellCount = (months) => COUNTRIES.length * months * SERIES.length
 export const HEADERS = ['month_date', 'country_iso3', 'indicator', 'segment', 'value']
 // Largest value a partner can submit at an epoch's mask width (2^63 - 1 or 2^127 - 1)
 export const maxValue = (bits) => (1n << BigInt(bits - 1)) - 1n
@@ -31,7 +33,7 @@ export function epochMonths(epoch) {
   if (!m) return null
   const year = Number(m[1])
   const month0 = Number(m[2]) - 1
-  return Array.from({ length: MONTH_COUNT }, (_, i) => {
+  return Array.from({ length: monthCount(epoch) }, (_, i) => {
     const total = month0 + i
     const y = year + Math.floor(total / 12)
     return `${y}-${String((total % 12) + 1).padStart(2, '0')}`
@@ -81,8 +83,10 @@ export function rewriteSampleMonths(text, months) {
       const csvMonth = line.slice(0, comma)
       if (!order.includes(csvMonth)) order.push(csvMonth)
       const target = months[order.indexOf(csvMonth)]
-      return target ? `${target}${line.slice(comma)}` : line
+      // The sample has 4 months; a quarterly epoch drops the last one
+      return target ? `${target}${line.slice(comma)}` : null
     })
+    .filter((line) => line != null)
     .join('\n')
 }
 
@@ -122,11 +126,11 @@ export function valueRule(quorum, country, indicator) {
 }
 
 const fileFailure = (kind, extra = {}) => ({
-  ok: false, fileError: { kind, ...extra }, errors: [], rows: [], missingCells: [], required: CELL_COUNT, dataRowCount: 0, readyCount: 0, badRowCount: 0,
+  ok: false, fileError: { kind, ...extra }, errors: [], rows: [], missingCells: [], required: 0, dataRowCount: 0, readyCount: 0, badRowCount: 0,
 })
 
 /**
- * Validates a data CSV for an epoch. The file has one row per country, month and series (200), except
+ * Validates a data CSV for an epoch. The file has one row per country, month and series (150 for a quarter), except
  * for metrics below the quorum, which must have no rows.
  * `quorum` = { answers: Map("country|indicator" -> ticked), ignoredPairs: Set("country|indicator") }:
  * a ticked metric needs values above 0, an unticked one 0, and a row of a metric below the quorum is
@@ -136,7 +140,7 @@ const fileFailure = (kind, extra = {}) => ({
  */
 export function parseAndValidateCsv(text, months, quorum = null, bits = 64) {
   const max = maxValue(bits)
-  if (!months || months.length !== MONTH_COUNT) return fileFailure('platform')
+  if (!months?.length) return fileFailure('platform')
   if (text == null || String(text).trim() === '') return fileFailure('empty')
 
   const rawLines = String(text).replace(/^﻿/, '').split(/\r?\n/)

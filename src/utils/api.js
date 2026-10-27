@@ -94,8 +94,9 @@ export const submitQuorum = (periodId, answers, token) =>
 // ── Admin ─────────────────────────────────────────────────────────────────────
 export const adminReset = (token) => post('/admin/reset', {}, token)
 
-export const adminResetAndCreateEpoch = (body, token) =>
-  post('/admin/producers/reset-and-create-epoch', body, token)
+// Creates the period's next quarterly epoch with its partners
+export const adminCreateNextEpoch = (periodId, token) =>
+  post(`/admin/quorum-periods/${periodId}/next-epoch`, {}, token)
 
 export const adminGetEpochs = (token) => get('/admin/epochs', token)
 

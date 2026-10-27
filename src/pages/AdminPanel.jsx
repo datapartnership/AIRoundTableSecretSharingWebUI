@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useMsal } from '@azure/msal-react'
 import { Page } from '../components/Shell'
-import { Alert, Checkbox, Tag } from '../components/ui'
+import { Alert, Checkbox, Disclosure, Tag } from '../components/ui'
 import * as api from '../utils/api'
-import { CELL_COUNT, MONTH_COUNT, SEGMENTS_BY_INDICATOR, formatInt } from '../utils/csvUpload'
+import { QUARTER_MONTHS, SEGMENTS_BY_INDICATOR, cellCount, formatInt, monthCount } from '../utils/csvUpload'
 import { USAGE, USAGE_TYPES, monthYear, monthRange, longDate } from '../utils/usage'
 
 // Must match EpochLifecycle.MinParticipants in the API
@@ -20,25 +20,36 @@ const monthIndex = (ym) => {
   return m ? Number(m[1]) * 12 + Number(m[2]) - 1 : null
 }
 
-// The non-cancelled period of the usage type whose 12 months hold the epoch's 4 months
-const periodFor = (periods, usageType, startMonth) => {
-  const s = monthIndex(startMonth)
-  return periods.find((p) => p.usageType === usageType && !p.cancelledAt
-    && s >= monthIndex(p.startDate) && s + 4 <= monthIndex(p.startDate) + PERIOD_MONTHS) ?? null
+// First day of the period's quarter `slot` (0-based)
+const slotStart = (period, slot) => {
+  const t = monthIndex(period.startDate) + slot * QUARTER_MONTHS
+  return `${Math.floor(t / 12)}-${String((t % 12) + 1).padStart(2, '0')}-01`
 }
 
-function formatMissingCells(cells, ignoredCount = 0) {
+// The quarter of the period an epoch reports in (0-based)
+const slotOf = (period, epoch) => Math.floor((monthIndex(epoch.startDate) - monthIndex(period.startDate)) / QUARTER_MONTHS)
+
+const blockedText = (p) => ({
+  'period-cancelled': 'This period was cancelled.',
+  'quorum-incomplete': 'Epochs can be created once every partner has answered the Quorum Check.',
+  'epoch-open': `Epoch ${p.openEpochId} is still open. It closes when every partner has submitted; cancel it to move on.`,
+  'period-full': `All ${p.epochCount} quarters have an epoch.`,
+})[p.blockedReason] ?? null
+
+function formatMissingCells(cells, required) {
   const n = cells?.length ?? 0
   if (n === 0) return '—'
   const preview = cells.slice(0, 6).map((c) => `${c.country} ${c.month} ${c.indicator}/${c.segment}`)
-  // Below-quorum cells get no data, so they are not required
-  return `${n} of ${CELL_COUNT - ignoredCount} missing (${preview.join(', ')}${n > 6 ? ' …' : ''})`
+  return `${n} of ${required} missing (${preview.join(', ')}${n > 6 ? ' …' : ''})`
 }
 
 // Cells of the metrics that fell below the quorum: every segment of the indicator, in every month
 const ignoredCellCount = (detail) => (detail.quorumCells ?? [])
   .filter((c) => c.ignored)
-  .reduce((n, c) => n + MONTH_COUNT * (SEGMENTS_BY_INDICATOR[c.indicator]?.length ?? 0), 0)
+  .reduce((n, c) => n + monthCount(detail) * (SEGMENTS_BY_INDICATOR[c.indicator]?.length ?? 0), 0)
+
+// Below-quorum cells get no data, so they are not required
+const requiredCellCount = (detail) => cellCount(monthCount(detail)) - ignoredCellCount(detail)
 
 const statusTag = (x) => x.cancelledAt ? <Tag kind="blocked">Cancelled</Tag>
   : x.isClosed ? <Tag kind="closed">Closed</Tag>
@@ -67,11 +78,9 @@ export default function AdminPanel() {
   const [periodMsg, setPeriodMsg] = useState(null)       // { kind, text }
 
   // ── Epoch creation ──────────────────────────────────────────────────────────
-  const [epochUsage, setEpochUsage] = useState('api')
-  const [startMonth, setStartMonth] = useState(thisMonth)
   const [epochBusy, setEpochBusy] = useState(false)
   const [epochMsg, setEpochMsg] = useState(null)
-  const [confirmCreate, setConfirmCreate] = useState(false)
+  const [confirmPeriodId, setConfirmPeriodId] = useState(null) // period whose next epoch is being confirmed
 
   // ── Epochs ──────────────────────────────────────────────────────────────────
   const [epochs, setEpochs] = useState([])
@@ -185,8 +194,6 @@ export default function AdminPanel() {
     }
   }
 
-  const epochPeriod = periodFor(periods, epochUsage, startMonth)
-
   // Only one Quorum Check can be unfinished at a time; follow it until partners finish answering
   const activePeriod = periods.find((p) => !p.cancelledAt && !p.quorumComplete) ?? null
   useEffect(() => {
@@ -195,19 +202,28 @@ export default function AdminPanel() {
     return () => clearInterval(id)
   }, [activePeriod?.periodId, loadPeriods])
 
-  const handleCreateEpoch = async () => {
+  // Periods that still have work: answering, a quarter left to create, or an epoch still open
+  const epochsOf = (p) => epochs.filter((e) => e.quorumPeriodId === p.periodId)
+  const workingPeriods = periods
+    .filter((p) => !p.cancelledAt && (p.nextSlot != null || epochsOf(p).some((e) => !e.isClosed && !e.cancelledAt)))
+    .sort((a, b) => b.periodId - a.periodId)
+
+  const refreshAll = () => Promise.all([loadPeriods(), loadEpochs()])
+
+  const handleCreateEpoch = async (p) => {
     setEpochBusy(true)
     setEpochMsg(null)
     try {
-      const data = await api.adminResetAndCreateEpoch({ usageType: epochUsage, startMonth, producers: asProducers(epochPeriod.producerIds) }, await token())
-      setEpochMsg({ kind: 'ok', text: `Epoch ${data.epoch?.epochId} created for ${USAGE[epochUsage].label}, ${monthYear(data.epoch?.startDate)}, with ${data.producers?.length} partners.` })
-      await loadEpochs()
+      const data = await api.adminCreateNextEpoch(p.periodId, await token())
+      setEpochMsg({ kind: 'ok', text: `Epoch ${data.epoch?.epochId} created for Q${p.nextSlot + 1}, ${monthRange(data.epoch?.startDate, QUARTER_MONTHS)}, with ${data.producers?.length} partners.` })
+      await refreshAll()
       if (data.epoch?.epochId) setSelectedEpochId(data.epoch.epochId)
     } catch (e) {
       setEpochMsg({ kind: 'error', text: e.message })
+      await loadPeriods()
     } finally {
       setEpochBusy(false)
-      setConfirmCreate(false)
+      setConfirmPeriodId(null)
     }
   }
 
@@ -221,12 +237,12 @@ export default function AdminPanel() {
       if (epochAction === 'recreate') {
         const data = await api.adminRecreateEpoch(epochId, reason, await token())
         setActionMsg({ kind: 'ok', text: `Epoch ${epochId} was cancelled and replaced by epoch ${data.epoch?.epochId}.` })
-        await loadEpochs()
+        await refreshAll()
         if (data.epoch?.epochId) setSelectedEpochId(data.epoch.epochId)
       } else {
         await api.adminCancelEpoch(epochId, reason, await token())
         setActionMsg({ kind: 'ok', text: `Epoch ${epochId} was cancelled.` })
-        await loadEpochs()
+        await refreshAll()
         await loadEpochDetail(epochId)
       }
       setEpochAction(null)
@@ -268,131 +284,115 @@ export default function AdminPanel() {
         <div className="epoch-head">
           <p className="usage">Platform administration</p>
           <h1 tabIndex={-1}>Admin</h1>
-          <p className="meta">Open Quorum Check periods and epochs, and follow submissions.</p>
+          <p className="meta">Open a Quorum Check period for a year, then create its quarterly epochs in order once every partner has answered.</p>
         </div>
 
         <section className="sec">
-          <h2>Registered partners</h2>
-          <p className="muted">Partners appear here automatically when they sign in. Select partners to open a Quorum Check period.</p>
-          {regError && <Alert kind="error" title="Partners could not be loaded" lines={[`Server message: ${regError}`]} />}
-          {registered.length === 0 && !regLoading ? (
-            <p className="muted">No partners registered yet.</p>
-          ) : (
-            <div className="atable-wrap">
-              <table className="atable">
-                <thead><tr><th style={{ width: 40 }}><Checkbox checked={allSelected} indeterminate={selected.size > 0 && !allSelected} ariaLabel="Select all partners"
-                  onChange={(v) => setSelected(v ? new Set(registered.map((p) => p.producerId)) : new Set())} /></th><th>Name</th><th>Object ID (producer ID)</th><th>Joined</th></tr></thead>
-                <tbody>
-                  {registered.map((p) => (
-                    <tr key={p.producerId}>
-                      <td><Checkbox checked={selected.has(p.producerId)} onChange={(v) => toggleSelect(p.producerId, v)} ariaLabel={`Select ${p.displayName}`} /></td>
-                      <td><b>{p.displayName}</b></td>
-                      <td className="mono">{p.producerId}</td>
-                      <td>{p.joinedDate ? longDate(p.joinedDate) : '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-          <div className="actions">
-            <button className="btn btn-secondary" onClick={loadRegistered} disabled={regLoading}>{regLoading ? 'Refreshing' : 'Refresh'}</button>
-            {!clearConfirm
-              ? <button className="btn btn-secondary" onClick={() => setClearConfirm(true)}>Clear all data</button>
-              : <>
-                  <span className="err">Wipes all partners, periods, epochs, keys, ciphertexts, answers and submissions.</span>
-                  <button className="btn btn-primary" onClick={handleClearAll} disabled={clearBusy}>{clearBusy ? 'Clearing' : 'Confirm clear'}</button>
-                  <button className="btn btn-secondary" onClick={() => setClearConfirm(false)}>Cancel</button>
-                </>}
-          </div>
-        </section>
-
-        <section className="sec">
-          <h2>Quorum Check periods</h2>
-          <p className="muted">A period covers {PERIOD_MONTHS} months of epochs of one usage type. Its partners answer the Quorum Check once, and every epoch in it has the same partners. Only one Quorum Check can be open at a time, across usage types.</p>
-          <div className="row">
-            <label className="field">Usage type
-              <select value={periodUsage} onChange={(e) => setPeriodUsage(e.target.value)}>
-                {USAGE_TYPES.map((u) => <option key={u} value={u}>{USAGE[u].label}</option>)}
-              </select>
-            </label>
-            <label className="field">Start month<input type="month" value={periodStart} onChange={(e) => setPeriodStart(e.target.value)} /></label>
-            <button className="btn btn-primary" onClick={handleCreatePeriod} disabled={periodBusy || !!activePeriod || selected.size < MIN_PARTICIPANTS}>
-              {periodBusy ? 'Opening' : `Open period with ${selected.size} selected partners`}
-            </button>
-          </div>
-          {activePeriod && <p className="why">Quorum Check period {activePeriod.periodId} ({USAGE[activePeriod.usageType].label}) is still answering. Cancel it or wait until every partner has answered.</p>}
-          {selected.size < MIN_PARTICIPANTS && <p className="why">Select {missingCount} more {missingCount === 1 ? 'partner' : 'partners'} above. A period needs at least {MIN_PARTICIPANTS}.</p>}
+          <h2>Step 1 · Quorum Check period</h2>
+          <p className="muted">A period covers {PERIOD_MONTHS} months of one usage type. Its partners answer the Quorum Check once, and every epoch in it has the same partners. Only one Quorum Check can be answering at a time.</p>
           {msg(periodMsg)}
-          {periods.length > 0 && (
-            <div className="atable-wrap">
-              <table className="atable">
-                <thead><tr><th>Period</th><th>Usage type</th><th>Months</th><th>Partners</th><th>Status</th><th><span className="sr-only">Action</span></th></tr></thead>
-                <tbody>
-                  {periods.map((p) => (
-                    <tr key={p.periodId}>
-                      <td className="num">{p.periodId}</td>
-                      <td>{USAGE[p.usageType]?.label ?? p.usageType}</td>
-                      <td>{monthYear(p.startDate)} to {monthYear(p.startDate, PERIOD_MONTHS - 1)}</td>
-                      <td>{p.producerIds.map(nameOf).join(', ')}</td>
-                      <td>{p.cancelledAt ? <Tag kind="blocked">Cancelled</Tag> : p.quorumComplete ? <Tag kind="valid">Complete</Tag> : <Tag kind="waiting">Answering</Tag>}</td>
-                      <td>{!p.cancelledAt && <button className="link" onClick={() => handleCancelPeriod(p)}>Cancel</button>}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+          {activePeriod ? (
+            <>
+              <div className="title-row" style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                <h3>Period {activePeriod.periodId}: {USAGE[activePeriod.usageType]?.label}, {monthYear(activePeriod.startDate)} to {monthYear(activePeriod.startDate, PERIOD_MONTHS - 1)}</h3>
+                <Tag kind="waiting">Answering</Tag>
+              </div>
+              <p>Partners: {activePeriod.producerIds.map(nameOf).join(', ')}.</p>
+              <p className="why">Partners are answering the Quorum Check. A new period can be opened once this one is complete or cancelled.</p>
+              <div className="actions"><button className="btn btn-secondary" onClick={() => handleCancelPeriod(activePeriod)}>Cancel period</button></div>
+            </>
+          ) : (
+            <>
+              <p>Select at least {MIN_PARTICIPANTS} partners. Partners appear here automatically when they sign in.</p>
+              {regError && <Alert kind="error" title="Partners could not be loaded" lines={[`Server message: ${regError}`]} />}
+              {registered.length === 0 && !regLoading ? (
+                <p className="muted">No partners registered yet.</p>
+              ) : (
+                <div className="atable-wrap">
+                  <table className="atable">
+                    <thead><tr><th style={{ width: 40 }}><Checkbox checked={allSelected} indeterminate={selected.size > 0 && !allSelected} ariaLabel="Select all partners"
+                      onChange={(v) => setSelected(v ? new Set(registered.map((p) => p.producerId)) : new Set())} /></th><th>Name</th><th>Object ID (producer ID)</th><th>Joined</th></tr></thead>
+                    <tbody>
+                      {registered.map((p) => (
+                        <tr key={p.producerId}>
+                          <td><Checkbox checked={selected.has(p.producerId)} onChange={(v) => toggleSelect(p.producerId, v)} ariaLabel={`Select ${p.displayName}`} /></td>
+                          <td><b>{p.displayName}</b></td>
+                          <td className="mono">{p.producerId}</td>
+                          <td>{p.joinedDate ? longDate(p.joinedDate) : '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              <div className="row">
+                <label className="field">Usage type
+                  <select value={periodUsage} onChange={(e) => setPeriodUsage(e.target.value)}>
+                    {USAGE_TYPES.map((u) => <option key={u} value={u}>{USAGE[u].label}</option>)}
+                  </select>
+                </label>
+                <label className="field">Start month<input type="month" value={periodStart} onChange={(e) => setPeriodStart(e.target.value)} /></label>
+                <button className="btn btn-primary" onClick={handleCreatePeriod} disabled={periodBusy || selected.size < MIN_PARTICIPANTS}>
+                  {periodBusy ? 'Opening' : `Open period with ${selected.size} selected partners`}
+                </button>
+                <button className="btn btn-secondary" onClick={loadRegistered} disabled={regLoading}>{regLoading ? 'Refreshing' : 'Refresh partners'}</button>
+              </div>
+              {selected.size < MIN_PARTICIPANTS && <p className="why">Select {missingCount} more {missingCount === 1 ? 'partner' : 'partners'} above.</p>}
+            </>
           )}
         </section>
 
         <section className="sec">
-          <h2>Create epoch</h2>
-          <p className="muted">Starts a new epoch of the usage type. It ends the open epoch of the same type; past epochs and their submissions are kept, and partners run a fresh key exchange.</p>
-          <div className="row">
-            <label className="field">Usage type
-              <select value={epochUsage} onChange={(e) => setEpochUsage(e.target.value)}>
-                {USAGE_TYPES.map((u) => <option key={u} value={u}>{USAGE[u].label}</option>)}
-              </select>
-            </label>
-            <label className="field">Start month<input type="month" value={startMonth} onChange={(e) => setStartMonth(e.target.value)} /></label>
-          </div>
-          {epochPeriod
-            ? <p>Reporting months {monthRange(`${startMonth}-01`, 4)}, in Quorum Check period {epochPeriod.periodId}. Partners: {epochPeriod.producerIds.map(nameOf).join(', ')}.</p>
-            : <p className="why">No Quorum Check period of {USAGE[epochUsage].label} covers {monthRange(`${startMonth}-01`, 4)}. Open one first.</p>}
+          <h2>Step 2 · Quarterly epochs</h2>
+          <p className="muted">Each period has {PERIOD_MONTHS / QUARTER_MONTHS} quarterly epochs, created in order. The next one can be created when the Quorum Check is complete and no other epoch is open. An epoch closes by itself when every partner has submitted.</p>
           {msg(epochMsg)}
-          <div className="actions">
-            {!confirmCreate
-              ? <button className="btn btn-primary" onClick={() => setConfirmCreate(true)} disabled={!epochPeriod}>Create epoch</button>
-              : <>
-                  <span className="err">Create a new {USAGE[epochUsage].label} epoch? The open {USAGE[epochUsage].label} epoch ends.</span>
-                  <button className="btn btn-primary" onClick={handleCreateEpoch} disabled={epochBusy}>{epochBusy ? 'Creating' : 'Confirm'}</button>
-                  <button className="btn btn-secondary" onClick={() => setConfirmCreate(false)}>Cancel</button>
-                </>}
-          </div>
-        </section>
-
-        <section className="sec">
-          <h2>Epochs</h2>
-          {epochsError && <Alert kind="error" title="Epochs could not be loaded" lines={[`Server message: ${epochsError}`]} />}
-          {epochs.length === 0 && !epochsLoading ? <p className="muted">No epochs yet.</p> : (
-            <div className="atable-wrap">
-              <table className="atable">
-                <thead><tr><th>Epoch</th><th>Usage type</th><th>Month</th><th>Partners</th><th>Status</th></tr></thead>
-                <tbody>
-                  {epochs.map((e) => (
-                    <tr key={e.epochId} className={`clickable${selectedEpochId === e.epochId ? ' selected' : ''}`} onClick={() => setSelectedEpochId(e.epochId)}>
-                      <td className="num">{e.epochId}</td>
-                      <td>{USAGE[e.usageType]?.label ?? e.usageType}</td>
-                      <td>{monthYear(e.startDate)}</td>
-                      <td>{e.producerCount}</td>
-                      <td>{statusTag(e)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-          <div className="actions"><button className="btn btn-secondary" onClick={loadEpochs} disabled={epochsLoading}>{epochsLoading ? 'Refreshing' : 'Refresh'}</button></div>
+          {workingPeriods.length === 0 && <p className="muted">No period has epochs left to create. Open a Quorum Check period in step 1.</p>}
+          {workingPeriods.map((p) => {
+            const own = epochsOf(p)
+            const quarters = Array.from({ length: p.epochCount ?? PERIOD_MONTHS / QUARTER_MONTHS }, (_, i) => {
+              const inSlot = own.filter((e) => slotOf(p, e) === i)
+              return { i, epoch: inSlot.find((e) => !e.cancelledAt) ?? inSlot[0] ?? null }
+            })
+            return (
+              <div key={p.periodId} className="sec">
+                <div className="title-row" style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <h3>Period {p.periodId}: {USAGE[p.usageType]?.label}, {monthYear(p.startDate)} to {monthYear(p.startDate, PERIOD_MONTHS - 1)}</h3>
+                  {p.quorumComplete ? <Tag kind="valid">Quorum Check complete</Tag> : <Tag kind="waiting">Answering</Tag>}
+                </div>
+                <div className="atable-wrap">
+                  <table className="atable">
+                    <thead><tr><th>Quarter</th><th>Months</th><th>Epoch</th><th>Status</th></tr></thead>
+                    <tbody>
+                      {quarters.map(({ i, epoch }) => (
+                        <tr key={i} className={epoch ? `clickable${selectedEpochId === epoch.epochId ? ' selected' : ''}` : undefined}
+                          onClick={epoch ? () => setSelectedEpochId(epoch.epochId) : undefined}>
+                          <td><b>Q{i + 1}</b></td>
+                          <td>{monthRange(epoch?.startDate ?? slotStart(p, i), epoch ? monthCount(epoch) : QUARTER_MONTHS)}</td>
+                          <td className="num">{epoch?.epochId ?? '—'}</td>
+                          <td>{epoch ? statusTag(epoch) : i === p.nextSlot ? <Tag kind="pending">Next</Tag> : <Tag kind="pending">Not created</Tag>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {p.nextSlot != null && (
+                  <div className="actions">
+                    {confirmPeriodId !== p.periodId
+                      ? <button className="btn btn-primary" onClick={() => setConfirmPeriodId(p.periodId)} disabled={!p.canCreateEpoch}>
+                          Create Q{p.nextSlot + 1} epoch ({monthRange(p.nextSlotStart, QUARTER_MONTHS)})
+                        </button>
+                      : <>
+                          <span className="err">Create the Q{p.nextSlot + 1} epoch with the period's {p.producerCount} partners? They start a fresh key exchange.</span>
+                          <button className="btn btn-primary" onClick={() => handleCreateEpoch(p)} disabled={epochBusy}>{epochBusy ? 'Creating' : 'Confirm'}</button>
+                          <button className="btn btn-secondary" onClick={() => setConfirmPeriodId(null)}>Cancel</button>
+                        </>}
+                  </div>
+                )}
+                {!p.canCreateEpoch && blockedText(p) && <p className="why">{blockedText(p)}</p>}
+              </div>
+            )
+          })}
+          <div className="actions"><button className="btn btn-secondary" onClick={refreshAll} disabled={epochsLoading}>{epochsLoading ? 'Refreshing' : 'Refresh'}</button></div>
         </section>
 
         {detailError && <Alert kind="error" title="The epoch could not be loaded" lines={[`Server message: ${detailError}`]} />}
@@ -400,7 +400,7 @@ export default function AdminPanel() {
         {epochDetail && !detailLoading && (
           <section className="sec">
             <div className="title-row" style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-              <h2>Epoch {epochDetail.epochId}: {USAGE[epochDetail.usageType]?.label}, {monthYear(epochDetail.startDate)}</h2>
+              <h2>Epoch {epochDetail.epochId}: {USAGE[epochDetail.usageType]?.label}, {monthRange(epochDetail.startDate, monthCount(epochDetail))}</h2>
               {statusTag(epochDetail)}
             </div>
             <p className="muted">{epochDetail.partnerCount} partners{epochDetail.quorumPeriod ? ` · Quorum Check period ${epochDetail.quorumPeriod.periodId}` : ' · No Quorum Check (created before periods)'}</p>
@@ -451,7 +451,7 @@ export default function AdminPanel() {
                         <tr key={p.producerId}>
                           <td><b>{p.displayName}</b></td>
                           <td className="mono">{p.producerId}</td>
-                          <td>{formatMissingCells(p.missingCells, ignoredCellCount(epochDetail))}</td>
+                          <td>{formatMissingCells(p.missingCells, requiredCellCount(epochDetail))}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -475,6 +475,66 @@ export default function AdminPanel() {
             ) : <p className="muted">No aggregates yet.</p>}
           </section>
         )}
+
+        <section className="sec">
+          <h2>History</h2>
+          {epochsError && <Alert kind="error" title="Epochs could not be loaded" lines={[`Server message: ${epochsError}`]} />}
+          <Disclosure id="history" label="Show all periods and epochs">
+            <h3>Quorum Check periods</h3>
+            {periods.length === 0 ? <p className="muted">No periods yet.</p> : (
+              <div className="atable-wrap">
+                <table className="atable">
+                  <thead><tr><th>Period</th><th>Usage type</th><th>Months</th><th>Partners</th><th>Status</th><th><span className="sr-only">Action</span></th></tr></thead>
+                  <tbody>
+                    {periods.map((p) => (
+                      <tr key={p.periodId}>
+                        <td className="num">{p.periodId}</td>
+                        <td>{USAGE[p.usageType]?.label ?? p.usageType}</td>
+                        <td>{monthYear(p.startDate)} to {monthYear(p.startDate, PERIOD_MONTHS - 1)}</td>
+                        <td>{p.producerIds.map(nameOf).join(', ')}</td>
+                        <td>{p.cancelledAt ? <Tag kind="blocked">Cancelled</Tag> : p.quorumComplete ? <Tag kind="valid">Complete</Tag> : <Tag kind="waiting">Answering</Tag>}</td>
+                        <td>{!p.cancelledAt && <button className="link" onClick={() => handleCancelPeriod(p)}>Cancel</button>}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <h3>Epochs</h3>
+            {epochs.length === 0 && !epochsLoading ? <p className="muted">No epochs yet.</p> : (
+              <div className="atable-wrap">
+                <table className="atable">
+                  <thead><tr><th>Epoch</th><th>Usage type</th><th>Months</th><th>Period</th><th>Partners</th><th>Status</th></tr></thead>
+                  <tbody>
+                    {epochs.map((e) => (
+                      <tr key={e.epochId} className={`clickable${selectedEpochId === e.epochId ? ' selected' : ''}`} onClick={() => setSelectedEpochId(e.epochId)}>
+                        <td className="num">{e.epochId}</td>
+                        <td>{USAGE[e.usageType]?.label ?? e.usageType}</td>
+                        <td>{monthRange(e.startDate, monthCount(e))}</td>
+                        <td>{e.quorumPeriodId ?? '—'}</td>
+                        <td>{e.producerCount}</td>
+                        <td>{statusTag(e)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Disclosure>
+        </section>
+
+        <section className="sec">
+          <h2>Danger zone</h2>
+          <div className="actions">
+            {!clearConfirm
+              ? <button className="btn btn-secondary" onClick={() => setClearConfirm(true)}>Clear all data</button>
+              : <>
+                  <span className="err">Wipes all partners, periods, epochs, keys, ciphertexts, answers and submissions.</span>
+                  <button className="btn btn-primary" onClick={handleClearAll} disabled={clearBusy}>{clearBusy ? 'Clearing' : 'Confirm clear'}</button>
+                  <button className="btn btn-secondary" onClick={() => setClearConfirm(false)}>Cancel</button>
+                </>}
+          </div>
+        </section>
       </main>
     </Page>
   )

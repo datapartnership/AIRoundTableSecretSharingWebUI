@@ -9,7 +9,7 @@ import * as api from '../utils/api'
 import { calculateMaskedValue } from '../utils/noise'
 import { getDeviceId } from '../utils/localCrypto'
 import {
-  CELL_COUNT, COUNTRIES, HEADERS, SEGMENTS_BY_INDICATOR, cellKey, epochMonths, isCsvFile, pairKey,
+  COUNTRIES, HEADERS, SEGMENTS_BY_INDICATOR, SERIES, cellCount, cellKey, epochMonths, isCsvFile, monthCount, pairKey,
   parseAndValidateCsv, rewriteSampleMonths, valueRule,
 } from '../utils/csvUpload'
 import { buildFileCheck, problemReportCsv } from '../utils/fileCheck'
@@ -64,7 +64,7 @@ function EpochShell({ u, epoch, children }) {
           <h1 tabIndex={-1}>{epoch ? `${monthYear(epoch.startDate)} epoch` : USAGE[u].label}</h1>
           {epoch && epochTag(epoch)}
         </div>
-        {epoch && <p className="meta">Reporting months: {monthRange(epoch.startDate, 4)}</p>}
+        {epoch && <p className="meta">Reporting months: {monthRange(epoch.startDate, monthCount(epoch))}</p>}
       </div>
       {children}
     </main>
@@ -132,7 +132,7 @@ function EpochView({ u, epoch, isAdmin }) {
 
   // Metrics below the quorum get no data, so the partner owes the rest
   const ignoredCellCount = months.length * [...quorumRules.ignoredPairs].reduce((n, k) => n + SEGMENTS_BY_INDICATOR[k.split('|')[1]].length, 0)
-  const owed = CELL_COUNT - ignoredCellCount
+  const owed = cellCount(months.length) - ignoredCellCount
   const belowQuorumText = [...quorumRules.ignoredPairs].map((k) => k.replace('|', ' ')).join(', ')
   const allSubmitted = epoch.mySubmissionComplete || (submitted && submitted.keys.size >= owed && owed > 0)
 
@@ -301,7 +301,7 @@ function EpochView({ u, epoch, isAdmin }) {
             <p className="leave">Keep this page open until this step is done. Use this browser until the epoch ends. Your key exists only in this browser.</p>
           </PartNow>
           <Sec h={SEC_FILE}>
-            <p>Checking opens when every partner in the epoch has finished step 2. You can prepare your file now. It needs {owed} rows: {COUNTRIES.length} countries, {CELL_COUNT / COUNTRIES.length / 4} series, months {monthRange(epoch.startDate, 4)}{belowQuorumText ? `, without the metrics below the quorum: ${belowQuorumText}` : ''}.</p>
+            <p>Checking opens when every partner in the epoch has finished step 2. You can prepare your file now. It needs {owed} rows: {COUNTRIES.length} countries, {SERIES.length} series, months {monthRange(epoch.startDate, monthCount(epoch))}{belowQuorumText ? `, without the metrics below the quorum: ${belowQuorumText}` : ''}.</p>
             <div className="actions">
               <button className="btn btn-primary" disabled aria-describedby="why-check">Upload file</button>
               <button className="btn btn-secondary" onClick={downloadSample}>Download sample.csv</button>
