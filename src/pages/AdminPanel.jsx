@@ -507,7 +507,7 @@ function QuorumSection({ detail }) {
                   <tr key={`${c.country}-${c.indicator}`}>
                     <td><b>{c.country}</b></td>
                     <td>{c.indicator}</td>
-                    <td>{c.participantCount}/{detail.partnerCount}</td>
+                    <td>{c.unverified ? 'Masks did not cancel' : `${c.participantCount}/${detail.partnerCount}`}</td>
                     <td>{c.signature ? <code className="sig" title={c.signature} style={{ background: sigColor(c.signature) }}>{shortSig(c.signature)}</code> : '—'}</td>
                     <td>{c.ignored ? <Tag kind="blocked">Ignored</Tag> : <Tag kind="valid">Active</Tag>}</td>
                   </tr>
