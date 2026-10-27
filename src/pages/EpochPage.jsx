@@ -81,6 +81,7 @@ function EpochView({ u, epoch, isAdmin }) {
   const deviceId = getDeviceId()
   const epochId = epoch.epochId
   const months = epochMonths(epoch) ?? []
+  const maskBits = epoch.maskBits ?? 64
   const viewOnly = isAdmin || !epoch.isEligible
   const inactive = viewOnly || epoch.isClosed || !!epoch.cancelledAt
 
@@ -155,7 +156,7 @@ function EpochView({ u, epoch, isAdmin }) {
       let text = null
       try { text = await file.text() } catch { result = { fileError: { kind: 'unreadable' } } }
       if (text !== null) {
-        try { result = parseAndValidateCsv(text, months, quorumRules) } catch (e) {
+        try { result = parseAndValidateCsv(text, months, quorumRules, maskBits) } catch (e) {
           console.error('[epoch] csv check failed', e)
           result = { fileError: { kind: 'platform' } }
         }
@@ -207,7 +208,7 @@ function EpochView({ u, epoch, isAdmin }) {
       const payload = []
       for (const r of rows) {
         if (done.has(cellKey(r.country, r.month, r.indicator, r.segment))) continue
-        const masked = await calculateMaskedValue(r.value, r.country, r.month, r.indicator, r.segment, myId, kx.sharedSecrets)
+        const masked = await calculateMaskedValue(r.value, r.country, r.month, r.indicator, r.segment, myId, kx.sharedSecrets, maskBits)
         payload.push({ country: r.country, month: r.month, indicator: r.indicator, segment: r.segment, value: masked.toString(), epochId, signature: 'web-ui' })
       }
       if (payload.length > 0) await api.submitMetricsBatch(payload, token)

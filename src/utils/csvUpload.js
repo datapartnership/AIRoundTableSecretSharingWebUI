@@ -16,7 +16,8 @@ export const INDICATORS = [...new Set(SERIES.map(([i]) => i))]
 export const MONTH_COUNT = 4
 export const CELL_COUNT = COUNTRIES.length * MONTH_COUNT * SERIES.length
 export const HEADERS = ['month_date', 'country_iso3', 'indicator', 'segment', 'value']
-export const LONG_MAX = 9223372036854775807n
+// Largest value a partner can submit at an epoch's mask width (2^63 - 1 or 2^127 - 1)
+export const maxValue = (bits) => (1n << BigInt(bits - 1)) - 1n
 
 const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/
 const VALUE_RE = /^[0-9]+$/
@@ -133,7 +134,8 @@ const fileFailure = (kind, extra = {}) => ({
  *
  * Errors carry a `kind` so the file check can group them (see fileCheck.js).
  */
-export function parseAndValidateCsv(text, months, quorum = null) {
+export function parseAndValidateCsv(text, months, quorum = null, bits = 64) {
+  const max = maxValue(bits)
   if (!months || months.length !== MONTH_COUNT) return fileFailure('platform')
   if (text == null || String(text).trim() === '') return fileFailure('empty')
 
@@ -201,7 +203,7 @@ export function parseAndValidateCsv(text, months, quorum = null) {
 
     let value = null
     if (raw === '') add('value-empty', rowNum, 'value', raw, record)
-    else if (!VALUE_RE.test(raw) || BigInt(raw) > LONG_MAX) add('value', rowNum, 'value', raw, record, { rule })
+    else if (!VALUE_RE.test(raw) || BigInt(raw) > max) add('value', rowNum, 'value', raw, record, { rule })
     else {
       value = BigInt(raw)
       if (rule === 'positive' && value === 0n) add('value', rowNum, 'value', raw, record, { rule })

@@ -85,12 +85,14 @@ web-ui/
 
 ## Noise Compatibility
 
-The JavaScript noise calculation in `noise.js` is mathematically identical to `SecureNoiseGenerator.cs` (C#) and `submit.py` (Python):
+The JavaScript noise calculation in `noise.js` is mathematically identical to `SecureNoiseGenerator.cs` (C#):
 
 ```
-noise = HMAC-SHA256(sharedSecret, "{country}|{month}")
-      → first 8 bytes as LE signed int64
-      → (seed % (2×maxNoise+1) + (2×maxNoise+1)) % (2×maxNoise+1) − maxNoise
+noise  = HMAC-SHA256(sharedSecret, "{country}|{month}|{indicator}|{segment}")
+       → first bits/8 bytes as LE signed integer (bits = epoch.maskBits: 128, or 64 for older epochs)
+masked = (actual + Σ noise × sign) mod 2^bits     // sign +1 if myId < partnerId, else −1
 ```
 
-All three runtimes produce the same value for any given shared secret + country + month tuple, which is required for the noise to cancel in the aggregate.
+The CSV check accepts values up to 2^(bits−1) − 1. Quorum Check answers always use 64 bits.
+
+Both runtimes produce the same value for any given shared secret and cell, which is required for the noise to cancel in the aggregate.
