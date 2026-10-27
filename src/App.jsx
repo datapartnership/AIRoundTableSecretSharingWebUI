@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { useIsAuthenticated, useMsal } from '@azure/msal-react'
 import Home from './pages/Home'
 import AllEpochs from './pages/AllEpochs'
@@ -7,6 +7,7 @@ import EpochPage from './pages/EpochPage'
 import QuorumPage from './pages/QuorumPage'
 import AdminPanel from './pages/AdminPanel'
 import { ShellContext } from './components/Shell'
+import useActiveQuorum from './hooks/useActiveQuorum'
 import { loginRequest, apiTokenRequest } from './authConfig'
 import * as api from './utils/api'
 
@@ -73,6 +74,16 @@ function App() {
     register()
   }, [isAuthenticated, account?.homeAccountId, role, register])
 
+  // One Quorum Check is active at a time; its partners see only the Quorum page until everyone has answered
+  const quorum = useActiveQuorum({ enabled: isAuthenticated && role !== 'unknown' })
+  const navigate = useNavigate()
+  const wasLocked = useRef(false)
+  useEffect(() => {
+    // Every partner answered, or an admin cancelled it: on to data submission
+    if (wasLocked.current && !quorum.locked) navigate('/', { replace: true })
+    wasLocked.current = quorum.locked
+  }, [quorum.locked])
+
   // On a page change: back to the top, and focus the page heading for screen readers
   const location = useLocation()
   const lastPath = useRef(null)
@@ -91,19 +102,23 @@ function App() {
     roleKnown: role !== 'unknown',
     registration,
     retryRegistration: register,
+    quorum,
     signIn: () => instance.loginRedirect(loginRequest),
     signOut: () => instance.logoutRedirect(),
   }
 
-  const signedIn = (page) => (isAuthenticated ? page : <Navigate to="/" replace />)
+  // Partners wait for the first Quorum Check status so another page doesn't flash before the redirect
+  const quorumPending = role === 'unknown' || (role === 'partner' && !quorum.known)
+  const gated = (page) => (!isAuthenticated ? page : quorumPending ? null : quorum.locked ? <Navigate to="/quorum" replace /> : page)
+  const signedIn = (page) => (isAuthenticated ? gated(page) : <Navigate to="/" replace />)
 
   return (
     <ShellContext.Provider value={shell}>
       <div id="app">
         <Routes>
-          <Route path="/" element={<Home />} />
+          <Route path="/" element={gated(<Home />)} />
           <Route path="/epochs" element={signedIn(<AllEpochs />)} />
-          <Route path="/quorum" element={signedIn(<QuorumPage />)} />
+          <Route path="/quorum" element={isAuthenticated ? <QuorumPage /> : <Navigate to="/" replace />} />
           <Route path="/api" element={signedIn(<EpochPage usageType="api" />)} />
           <Route path="/chat" element={signedIn(<EpochPage usageType="chat" />)} />
           <Route path="/admin" element={signedIn(role === 'unknown' ? null : isAdmin ? <AdminPanel /> : <Navigate to="/" replace />)} />

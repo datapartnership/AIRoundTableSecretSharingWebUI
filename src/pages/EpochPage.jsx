@@ -317,7 +317,7 @@ function EpochView({ u, epoch, isAdmin }) {
         <Sec h={SEC_FILE}>
           <div className="lead">
             <p>Upload opens when the Quorum Check for this period is complete. You can prepare your file now.</p>
-            <Link className="link" to={`/quorum?type=${u}`}>Go to the Quorum Check</Link>
+            <Link className="link" to="/quorum">Go to the Quorum Check</Link>
           </div>
           <div className="actions">
             <button className="btn btn-primary" disabled aria-describedby="why-quorum">Upload file</button>

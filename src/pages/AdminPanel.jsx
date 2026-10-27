@@ -187,6 +187,14 @@ export default function AdminPanel() {
 
   const epochPeriod = periodFor(periods, epochUsage, startMonth)
 
+  // Only one Quorum Check can be unfinished at a time; follow it until partners finish answering
+  const activePeriod = periods.find((p) => !p.cancelledAt && !p.quorumComplete) ?? null
+  useEffect(() => {
+    if (!activePeriod) return
+    const id = setInterval(loadPeriods, 10000)
+    return () => clearInterval(id)
+  }, [activePeriod?.periodId, loadPeriods])
+
   const handleCreateEpoch = async () => {
     setEpochBusy(true)
     setEpochMsg(null)
@@ -301,7 +309,7 @@ export default function AdminPanel() {
 
         <section className="sec">
           <h2>Quorum Check periods</h2>
-          <p className="muted">A period covers {PERIOD_MONTHS} months of epochs of one usage type. Its partners answer the Quorum Check once, and every epoch in it has the same partners.</p>
+          <p className="muted">A period covers {PERIOD_MONTHS} months of epochs of one usage type. Its partners answer the Quorum Check once, and every epoch in it has the same partners. Only one Quorum Check can be open at a time, across usage types.</p>
           <div className="row">
             <label className="field">Usage type
               <select value={periodUsage} onChange={(e) => setPeriodUsage(e.target.value)}>
@@ -309,10 +317,11 @@ export default function AdminPanel() {
               </select>
             </label>
             <label className="field">Start month<input type="month" value={periodStart} onChange={(e) => setPeriodStart(e.target.value)} /></label>
-            <button className="btn btn-primary" onClick={handleCreatePeriod} disabled={periodBusy || selected.size < MIN_PARTICIPANTS}>
+            <button className="btn btn-primary" onClick={handleCreatePeriod} disabled={periodBusy || !!activePeriod || selected.size < MIN_PARTICIPANTS}>
               {periodBusy ? 'Opening' : `Open period with ${selected.size} selected partners`}
             </button>
           </div>
+          {activePeriod && <p className="why">Quorum Check period {activePeriod.periodId} ({USAGE[activePeriod.usageType].label}) is still answering. Cancel it or wait until every partner has answered.</p>}
           {selected.size < MIN_PARTICIPANTS && <p className="why">Select {missingCount} more {missingCount === 1 ? 'partner' : 'partners'} above. A period needs at least {MIN_PARTICIPANTS}.</p>}
           {msg(periodMsg)}
           {periods.length > 0 && (

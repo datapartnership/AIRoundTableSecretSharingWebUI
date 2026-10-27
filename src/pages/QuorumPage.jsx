@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
 import { useMsal } from '@azure/msal-react'
 import { Page, announce, download, useShell } from '../components/Shell'
 import { Alert, Checkbox, Tag } from '../components/ui'
@@ -9,9 +8,8 @@ import { calculateMaskedValue } from '../utils/noise'
 import { getDeviceId } from '../utils/localCrypto'
 import { COUNTRIES, INDICATORS, pairKey, parseQuorumCsv, quorumSampleCsv } from '../utils/csvUpload'
 import { loadQuorumLocal, saveQuorumLocal } from '../utils/quorumLocal'
-import { USAGE, USAGE_TYPES, SUPPORT_EMAIL, clockTime, longDate, monthYear } from '../utils/usage'
+import { USAGE, SUPPORT_EMAIL, clockTime, longDate, monthYear } from '../utils/usage'
 
-const POLL_MS = 5000
 const COUNTRY_NAMES = { IND: 'India', BRA: 'Brazil', USA: 'United States', GBR: 'United Kingdom', NGA: 'Nigeria' }
 const INDICATOR_LABELS = { tokens: 'Tokens', token_access: 'Access type', model_region_of_origin: 'Model region of origin' }
 const NI = INDICATORS.length
@@ -21,60 +19,49 @@ const keyAt = (i) => pairKey(COUNTRIES[Math.floor(i / NI)], INDICATORS[i % NI])
 const count = (a) => a.filter(Boolean).length
 
 export default function QuorumPage() {
-  const { instance, accounts } = useMsal()
-  const account = accounts[0]
-  const { isAdmin } = useShell()
-  const [params, setParams] = useSearchParams()
-  const u = USAGE_TYPES.includes(params.get('type')) ? params.get('type') : 'api'
-  const [status, setStatus] = useState(null)
-  const [loadError, setLoadError] = useState(null)
-
-  const load = useCallback(async () => {
-    try {
-      const token = await api.acquireApiToken(instance, account)
-      setStatus(await api.getQuorumCurrent(u, token))
-      setLoadError(null)
-    } catch (e) {
-      console.error('[quorum] status failed', e)
-      setLoadError(e.message)
-    }
-  }, [instance, account?.homeAccountId, u])
-
-  useEffect(() => {
-    setStatus(null)
-    load()
-    const id = setInterval(load, POLL_MS)
-    return () => clearInterval(id)
-  }, [load])
-
+  // The one active Quorum Check, polled by the app shell so every page sees the same period
+  const { isAdmin, quorum } = useShell()
+  const { status, known, error: loadError, refresh } = quorum
   const period = status?.period ?? null
-  const ready = status && status.usageType === u
+  const u = period?.usageType ?? null
+
+  // An admin cancelled the period and opened another while this page was open
+  const seenPeriod = useRef(null)
+  const [replaced, setReplaced] = useState(false)
+  useEffect(() => {
+    if (!period) return
+    if (seenPeriod.current !== null && seenPeriod.current !== period.periodId) {
+      setReplaced(true)
+      announce('The platform administrator opened a new Quorum Check.')
+    }
+    seenPeriod.current = period.periodId
+  }, [period?.periodId])
+
   const tag = !period ? null : period.isCancelled ? <Tag kind="blocked">Cancelled</Tag>
     : status.quorumComplete ? <Tag kind="closed">Complete</Tag> : <Tag kind="open">Open</Tag>
 
   let body
-  if (loadError && !ready) {
+  if (loadError && !status) {
     body = <Alert kind="error" title="The Quorum Check could not be loaded" lines={[`Server message: ${loadError}`, 'Your answers are not affected. Reload the page, or contact the platform administrator if this continues.']} />
-  } else if (!ready) {
+  } else if (!known || !status) {
     body = <div role="status"><p className="qsum">Checking the Quorum Check</p></div>
   } else if (!period) {
-    // Not drawn: proposal for when no period covers today
-    body = <section className="qsec"><h2>No Quorum Check is open for {USAGE[u].label}</h2><p>It appears here when the platform administrator opens one. Nothing will notify you, so come back to this page later.</p></section>
+    body = <section className="qsec"><h2>No Quorum Check is open</h2><p>It appears here when the platform administrator opens one. This page updates automatically.</p></section>
   } else if (isAdmin || !status.isEligible) {
     body = <section className="qsec"><h2>Your answers</h2><p className="note">{isAdmin ? 'Admins can’t answer the Quorum Check. Partners’ progress is shown in Admin.' : 'Your organization is not a partner in this Quorum Check.'}</p></section>
   } else {
-    body = <QuorumAnswers key={period.periodId} u={u} status={status} onSubmitted={load} />
+    body = (
+      <>
+        {replaced && <Alert kind="warning" title="A new Quorum Check was opened" lines={['The platform administrator replaced the previous Quorum Check. Answers given to it no longer count, so answer this one.']} />}
+        <QuorumAnswers key={period.periodId} u={u} status={status} onSubmitted={refresh} />
+      </>
+    )
   }
 
   return (
     <Page>
       <main id="main" className="epoch quorum wrap">
         <div className="epoch-head">
-          <label className="field usage-select">Usage type
-            <select name="usage-type" value={u} onChange={(e) => setParams({ type: e.target.value }, { replace: true })}>
-              {USAGE_TYPES.map((k) => <option key={k} value={k}>{USAGE[k].label}</option>)}
-            </select>
-          </label>
           <div className="title-row"><h1 tabIndex={-1}>Quorum check</h1>{tag}</div>
           {period && <p className="meta">Covers {USAGE[u].label} epochs from {monthYear(period.startDate)} to {monthYear(period.startDate, 11)}</p>}
         </div>
@@ -181,7 +168,7 @@ function QuorumAnswers({ u, status, onSubmitted }) {
           Your answers were submitted on {longDate(at)} at {clockTime(at)}.{' '}
           {status.quorumComplete
             ? 'Every partner has answered, so the data upload is open.'
-            : 'The data upload opens when every partner has answered. Nothing will notify you, so come back to this page later.'}
+            : `${status.answeredPartners} of ${status.partnerCount} partners have answered. This page updates automatically and takes you to data submission when everyone has answered.`}
         </p>
         {saved
           ? <Matrix answers={Array.from({ length: NQ }, (_, i) => saved[keyAt(i)] === 1)} done />

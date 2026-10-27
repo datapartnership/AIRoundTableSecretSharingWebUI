@@ -132,7 +132,7 @@ export function Checkbox({ checked, indeterminate = false, onChange, label, aria
   )
 }
 
-export function Nav({ signedIn, home = false, user, isAdmin = false, onSignOut }) {
+export function Nav({ signedIn, home = false, user, isAdmin = false, locked = false, onSignOut }) {
   const { open, setOpen, btnRef, panelRef } = usePopover()
   const cls = `nav wrap ${home ? 'transparent' : ''} on-dark`
   if (!signedIn) {
@@ -142,8 +142,8 @@ export function Nav({ signedIn, home = false, user, isAdmin = false, onSignOut }
       </header>
     )
   }
-  // Quorum Check is the first nav item (2026-10-14)
-  const items = [
+  // Quorum Check is the first nav item (2026-10-14); while a partner owes or awaits it, it is the only one
+  const items = locked ? [['/quorum', 'Quorum Check']] : [
     ['/quorum', 'Quorum Check'],
     ['/', 'Home'],
     ...USAGE_TYPES.map((u) => [`/${u}`, USAGE[u].nav]),
@@ -151,7 +151,7 @@ export function Nav({ signedIn, home = false, user, isAdmin = false, onSignOut }
   ]
   return (
     <header className={cls}>
-      <Link className="logo" to="/"><img src="/logo.png" alt="Development Data Partnership, Home" /></Link>
+      <Link className="logo" to={locked ? '/quorum' : '/'}><img src="/logo.png" alt="Development Data Partnership, Home" /></Link>
       <nav className="nav-links" aria-label="Main">
         {items.map(([to, label]) => (
           <NavLink key={to} to={to} end={to === '/'} className={`nav-link${to === '/admin' ? ' nav-admin' : ''}`}>{label}</NavLink>

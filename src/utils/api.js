@@ -82,8 +82,8 @@ export const submitMetricsBatch = (submissions, token) =>
   post('/metrics/submit-batch', submissions, token)
 
 // ── Quorum Check ──────────────────────────────────────────────────────────────
-export const getQuorumCurrent = (usageType, token) =>
-  get(`/quorum/current?usageType=${encodeURIComponent(usageType)}`, token)
+// The one active (unfinished) Quorum Check, of any usage type; `period` is null when none is open
+export const getQuorumCurrent = (token) => get('/quorum/current', token)
 
 export const getQuorumPeriod = (periodId, token) =>
   get(`/quorum/periods/${encodeURIComponent(periodId)}`, token)
