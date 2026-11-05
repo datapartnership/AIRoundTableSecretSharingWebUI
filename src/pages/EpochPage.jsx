@@ -2,28 +2,30 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useMsal } from '@azure/msal-react'
 import { Page, announce, download, useShell } from '../components/Shell'
-import { Alert, ProtocolStrip, Tag, epochTag, stepAnnouncement } from '../components/ui'
+import { Alert, ProtocolStrip, epochTag, stepAnnouncement } from '../components/ui'
+import { FileCheck, FileInfo, SEC_FILE, Sec, ValidFile } from '../components/FileCheckView'
 import useEpochs, { byStartDesc } from '../hooks/useEpochs'
 import useKeyExchange from '../hooks/useKeyExchange'
 import * as api from '../utils/api'
 import { calculateMaskedValue } from '../utils/noise'
 import { getDeviceId } from '../utils/localCrypto'
 import {
-  COUNTRIES, HEADERS, SEGMENTS_BY_INDICATOR, SERIES, cellCount, cellKey, epochMonths, isCsvFile, monthCount, pairKey,
+  COUNTRIES, SEGMENTS_BY_INDICATOR, SERIES, cellCount, cellKey, epochMonths, isCsvFile, monthCount, pairKey,
   parseAndValidateCsv, rewriteSampleMonths, valueRule,
 } from '../utils/csvUpload'
-import { buildFileCheck, problemReportCsv } from '../utils/fileCheck'
+import { buildFileCheck } from '../utils/fileCheck'
 import { answersMap, loadQuorumLocal } from '../utils/quorumLocal'
+import { MIN_PASSPHRASE, OFFLINE_SIGNATURE, OFFLINE_TOOL_FILE, buildKeyFile, checkMaskedFile } from '../utils/offlineBundle'
 import { USAGE, SUPPORT_EMAIL, clockTime, longDate, monthRange, monthYear } from '../utils/usage'
 
 const POLL_MS = 5000
 const D = 'done', C = 'current', W = 'waiting', P = 'problem', L = 'later'
-const SEC_FILE = 'Upload and verify data'
 const SEC_SUBMIT = 'Masked data submission'
 const SUBMIT_P = 'Your browser masks each value, then sends only the masked values. Submitting is final: you cannot change your contribution after this.'
+const SUBMIT_OFFLINE_P = 'These values were masked on your offline computer. This page sends them as they are. Submitting is final: you cannot change your contribution after this.'
+const SEC_OFFLINE = 'No internet on the computer with your data?'
 const ACCESS = SEGMENTS_BY_INDICATOR.token_access
 const REGIONS = SEGMENTS_BY_INDICATOR.model_region_of_origin
-const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`
 
 export default function EpochPage({ usageType: u }) {
   const { isAdmin } = useShell()
@@ -71,7 +73,6 @@ function EpochShell({ u, epoch, children }) {
   )
 }
 
-const Sec = ({ h, children }) => <section className="sec"><h2 tabIndex={-1}>{h}</h2>{children}</section>
 const PartNow = ({ children }) => <Sec h="Your part now">{children}</Sec>
 
 function EpochView({ u, epoch, isAdmin }) {
@@ -137,11 +138,54 @@ function EpochView({ u, epoch, isAdmin }) {
   const allSubmitted = epoch.mySubmissionComplete || (submitted && submitted.keys.size >= owed && owed > 0)
 
   // ── Upload and submit ────────────────────────────────────────────────────────
-  const [upload, setUpload] = useState({ phase: 'idle' })   // idle | checking | checked
+  const [upload, setUpload] = useState({ phase: 'idle' })   // idle | checking | checked | masked-invalid
   const [submit, setSubmit] = useState({ phase: 'idle' })   // idle | submitting | failed
   const fileInput = useRef(null)
+  const maskedInput = useRef(null)
 
   const choose = () => fileInput.current?.click()
+  const chooseMasked = () => maskedInput.current?.click()
+
+  // ── Offline submission: export a key file, submit the masked file made offline ─
+  const [keyExport, setKeyExport] = useState({ phase: 'idle' })   // idle | exporting | done | failed
+
+  const exportKeyFile = async (passphrase) => {
+    setKeyExport({ phase: 'exporting' })
+    try {
+      const file = await buildKeyFile({
+        epoch, months, maskBits, myId, keyPair: kx.keyPair, sharedSecrets: kx.sharedSecrets, quorumRules, passphrase,
+        epochLabel: `${monthYear(epoch.startDate)} ${USAGE[u].label}`,
+      })
+      const name = `airt-epoch-${epochId}-key.json`
+      download(name, JSON.stringify(file), 'application/json')
+      setKeyExport({ phase: 'done', name })
+      announce(`Key file ${name} saved.`)
+    } catch (e) {
+      console.error('[epoch] key file export failed', e)
+      setKeyExport({ phase: 'failed', message: e.message })
+    }
+  }
+
+  const onMaskedFile = async (event) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    setSubmit({ phase: 'idle' })
+    setUpload({ phase: 'checking', fileName: file.name })
+    const at = new Date()
+    let check
+    try {
+      check = await checkMaskedFile(await file.text(), { epochId, myId, maskBits, keyPair: kx.keyPair, months, quorumRules })
+    } catch (e) {
+      console.error('[epoch] masked file check failed', e)
+      check = { ok: false, problems: ['The file could not be read. Choose the .json file the offline tool created.'] }
+    }
+    if (check.ok) {
+      setUpload({ phase: 'checked', offline: true, fileName: file.name, at, result: { ok: true, rows: check.rows, dataRowCount: check.rows.length, maskedFile: check.file } })
+    } else {
+      setUpload({ phase: 'masked-invalid', fileName: file.name, at, problems: check.problems })
+    }
+  }
 
   const onFile = async (event) => {
     const file = event.target.files?.[0]
@@ -208,8 +252,8 @@ function EpochView({ u, epoch, isAdmin }) {
       const payload = []
       for (const r of rows) {
         if (done.has(cellKey(r.country, r.month, r.indicator, r.segment))) continue
-        const masked = await calculateMaskedValue(r.value, r.country, r.month, r.indicator, r.segment, myId, kx.sharedSecrets, maskBits)
-        payload.push({ country: r.country, month: r.month, indicator: r.indicator, segment: r.segment, value: masked.toString(), epochId, signature: 'web-ui' })
+        const masked = upload.offline ? r.masked : await calculateMaskedValue(r.value, r.country, r.month, r.indicator, r.segment, myId, kx.sharedSecrets, maskBits)
+        payload.push({ country: r.country, month: r.month, indicator: r.indicator, segment: r.segment, value: masked.toString(), epochId, signature: upload.offline ? OFFLINE_SIGNATURE : 'web-ui' })
       }
       if (payload.length > 0) await api.submitMetricsBatch(payload, token)
       await loadSubmissions()
@@ -333,11 +377,13 @@ function EpochView({ u, epoch, isAdmin }) {
     strip = submit.phase === 'submitting' ? [D, D, D, W] : [D, D, D, P]
     content = (
       <>
-        <ValidFile upload={upload} busy={submit.phase === 'submitting'} onChoose={choose} />
+        {upload.offline
+          ? <MaskedFile upload={upload} busy={submit.phase === 'submitting'} onChoose={chooseMasked} />
+          : <ValidFile upload={upload} busy={submit.phase === 'submitting'} onChoose={choose} />}
         <Sec h={SEC_SUBMIT}>
-          <p>{SUBMIT_P}</p>
+          <p>{upload.offline ? SUBMIT_OFFLINE_P : SUBMIT_P}</p>
           {submit.phase === 'submitting' ? (
-            <div className="actions"><button className="btn btn-primary" disabled aria-describedby="why-busy">Submitting</button><span className="why" id="why-busy">Masking {upload.result.rows.length} values, then sending them. Keep this page open.</span></div>
+            <div className="actions"><button className="btn btn-primary" disabled aria-describedby="why-busy">Submitting</button><span className="why" id="why-busy">{upload.offline ? `Sending ${upload.result.rows.length} masked values` : `Masking ${upload.result.rows.length} values, then sending them`}. Keep this page open.</span></div>
           ) : submit.kind === 'none' ? (
             <>
               <Alert kind="error" title="Submit did not finish" lines={[`The server did not confirm your contribution. Server message: ${submit.message}. The page then checked the server: none of your values are stored.`, `Your file is still loaded and checked. Submit again. If it fails again, contact ${SUPPORT_EMAIL}.`]} />
@@ -358,8 +404,23 @@ function EpochView({ u, epoch, isAdmin }) {
     strip = [D, D, D, C]
     content = (
       <>
-        <ValidFile upload={upload} onChoose={choose} />
-        <Sec h={SEC_SUBMIT}><p>{SUBMIT_P}</p><div className="actions"><button className="btn btn-primary" onClick={doSubmit}>Submit contribution</button></div></Sec>
+        {upload.offline ? <MaskedFile upload={upload} onChoose={chooseMasked} /> : <ValidFile upload={upload} onChoose={choose} />}
+        <Sec h={SEC_SUBMIT}><p>{upload.offline ? SUBMIT_OFFLINE_P : SUBMIT_P}</p><div className="actions"><button className="btn btn-primary" onClick={doSubmit}>Submit contribution</button></div></Sec>
+      </>
+    )
+  } else if (upload.phase === 'masked-invalid') {
+    strip = [D, D, P, L]
+    content = (
+      <>
+        <Sec h={SEC_FILE}>
+          <FileInfo upload={upload} meta={`Masked file | Checked in this browser at ${clockTime(upload.at)}`} />
+          <Alert kind="error" title="This masked file can't be submitted" lines={upload.problems} />
+          <div className="actions">
+            <button className="btn btn-primary" onClick={chooseMasked}>Choose a different masked file</button>
+            <button className="btn btn-secondary" onClick={() => setUpload({ phase: 'idle' })}>Back</button>
+          </div>
+        </Sec>
+        <SubmitDisabled />
       </>
     )
   } else if (upload.phase === 'checked') {
@@ -389,6 +450,7 @@ function EpochView({ u, epoch, isAdmin }) {
           <p>Expecting monthly token data for {COUNTRIES.length} countries, {ACCESS.length} model access types and {REGIONS.length} model regions of origin.{epoch.quorumPeriodId ? ' Report values for the metrics you ticked in the Quorum Check, and enter 0 for the others.' : ''}{belowQuorumText ? ` Leave out the metrics below the quorum: ${belowQuorumText}. The file needs ${owed} rows.` : ''}</p>
           <div className="actions"><button className="btn btn-primary" onClick={choose}>Upload file</button><button className="btn btn-secondary" onClick={downloadSample}>Download sample.csv</button></div>
         </Sec>
+        <OfflineSubmission keyExport={keyExport} onExport={exportKeyFile} onChooseMasked={chooseMasked} />
         <SubmitDisabled />
       </>
     )
@@ -408,6 +470,7 @@ function EpochView({ u, epoch, isAdmin }) {
       {strip && <ProtocolStrip strip={strip} />}
       <div className="main">{content}</div>
       <input ref={fileInput} type="file" accept=".csv,text/csv" onChange={onFile} hidden />
+      <input ref={maskedInput} type="file" accept=".json,application/json" onChange={onMaskedFile} hidden />
     </EpochShell>
   )
 }
@@ -421,86 +484,56 @@ function SubmitDisabled() {
   )
 }
 
-function FileInfo({ upload, meta }) {
-  return (
-    <div className="file">
-      <div className="fname">{upload.fileName}</div>
-      <div className="fmeta">{meta ?? `${upload.result.dataRowCount} rows | Checked in this browser at ${clockTime(upload.at)}`}</div>
-    </div>
-  )
-}
-
-function ValidFile({ upload, busy = false, onChoose }) {
-  const rows = upload.result.rows.filter((r) => r.value > 0n)
-  const countries = new Set(rows.map((r) => r.country)).size
-  const access = new Set(rows.filter((r) => r.indicator === 'token_access').map((r) => r.segment)).size
-  const regions = new Set(rows.filter((r) => r.indicator === 'model_region_of_origin').map((r) => r.segment)).size
+function MaskedFile({ upload, busy = false, onChoose }) {
+  const f = upload.result.maskedFile
   return (
     <Sec h={SEC_FILE}>
-      <FileInfo upload={upload} />
-      <div className="summary"><span className="big">All {upload.result.dataRowCount} rows are valid</span></div>
-      <p>Your contribution: {plural(countries, 'country', 'countries')}, {plural(access, 'model access type', 'model access types')} and {plural(regions, 'model region of origin', 'model regions of origin')}.</p>
-      <div className="actions"><button className="btn btn-secondary" onClick={onChoose} disabled={busy}>Upload a different file</button></div>
+      <FileInfo upload={upload} meta={`Masked offline on ${longDate(f.createdAt)} | Checked in this browser at ${clockTime(upload.at)}`} />
+      <div className="summary"><span className="big">All {upload.result.rows.length} masked values are valid</span></div>
+      <p>The file matches this epoch and the key in this browser. Masked values can't be checked against your CSV here; the offline tool checked the CSV before it masked it.</p>
+      <div className="actions"><button className="btn btn-secondary" onClick={onChoose} disabled={busy}>Choose a different masked file</button></div>
     </Sec>
   )
 }
 
-function ExampleTable({ g, limit }) {
-  const rows = limit ? g.rows.slice(0, limit) : g.rows
-  return (
-    <div className="table-scroll">
-      <table className="ex">
-        <thead><tr>{g.cols.map((h) => <th key={h} scope="col">{h}</th>)}</tr></thead>
-        <tbody>{rows.map((r, i) => <tr key={i}>{r.map((v, j) => <td key={j}>{j === g.bad ? <mark>{v}</mark> : v}</td>)}</tr>)}</tbody>
-      </table>
-    </div>
-  )
-}
-
-function ProblemGroup({ g, i, compact }) {
-  const [all, setAll] = useState(false)
-  const more = g.rows.length > 3
-  const copyHeader = () => navigator.clipboard?.writeText(HEADERS.join(',')).then(() => announce('Accepted header copied.'), () => {})
-  return (
-    <li className="prob">
-      <span className="pn">{i + 1}</span>
-      <div className="pc">
-        <p className="what">{g.what}</p>
-        <p className="where">{g.where}</p>
-        {!compact && g.accepted && <p>{g.accepted}</p>}
-        {(g.code ?? []).map(([l, v]) => [<p key={`${l}l`}>{l}</p>, <p key={`${l}v`} className="code">{v}</p>])}
-        {g.copyHeader && <div><button className="btn btn-secondary" onClick={copyHeader}>Copy accepted header</button></div>}
-        <p>{g.fix}</p>
-        {g.rows.length > 0 && (compact
-          ? <details className="exrows"><summary className="link">Show example rows</summary><ExampleTable g={g} limit={3} /></details>
-          : <ExampleTable g={g} limit={all ? 0 : 3} />)}
-        {!compact && more && <div><button className="link" onClick={() => setAll(!all)}>{all ? 'Show fewer rows' : `Show all ${g.rows.length} rows`}</button></div>}
-      </div>
-    </li>
-  )
-}
-
-function FileCheck({ upload, onChoose, onSample }) {
-  const v = upload.view
-  const acts = v.acts ?? [['choose', 'Upload corrected file'], ['report', 'Download problem report (.csv)']]
-  const run = {
-    choose: onChoose,
-    sample: onSample,
-    report: () => download('problem-report.csv', problemReportCsv(v)),
-    reload: () => window.location.reload(),
+function OfflineSubmission({ keyExport, onExport, onChooseMasked }) {
+  const [passphrase, setPassphrase] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const busy = keyExport.phase === 'exporting'
+  const tooShort = passphrase.length < MIN_PASSPHRASE
+  const mismatch = confirm !== '' && confirm !== passphrase
+  const submitExport = (event) => {
+    event.preventDefault()
+    if (tooShort || confirm !== passphrase) return
+    onExport(passphrase)
+    setPassphrase('')
+    setConfirm('')
   }
   return (
-    <Sec h={SEC_FILE}>
-      <FileInfo upload={upload} meta={v.blocked ? v.meta : undefined} />
-      <div className="summary">
-        <div className="line">{v.blocked ? <Tag kind="blocked">Blocked</Tag> : <Tag kind="fix">Needs correction</Tag>}<span className="big">{v.big}</span></div>
-        {v.sub && <p className="subl">{v.sub}</p>}
-      </div>
-      {(v.text ?? []).map((p, i) => <p key={i}>{p}</p>)}
-      {v.groups?.length > 0 && <ol className="problems">{v.groups.map((g, i) => <ProblemGroup key={i} g={g} i={i} compact={v.compact} />)}</ol>}
-      <div className="actions">
-        {acts.map(([a, label], i) => <button key={a} className={`btn ${i ? 'btn-secondary' : 'btn-primary'}`} onClick={run[a]}>{label}</button>)}
-      </div>
+    <Sec h={SEC_OFFLINE}>
+      <p>You can mask your data on a computer without internet access:</p>
+      <ol className="offline-steps">
+        <li>Export your key file here, protected with a passphrase, and download the offline tool.</li>
+        <li>Copy both files to the computer with your data. Open {OFFLINE_TOOL_FILE} in Edge, Chrome or Firefox, open the key file, upload your CSV and save the masked file.</li>
+        <li>Copy the masked file back to this computer and submit it here, in this browser.</li>
+      </ol>
+      <p className="leave">Anyone with the key file and its passphrase can unmask your values. Don’t send the passphrase with the file, and delete the key file from both computers after you submit.</p>
+      {keyExport.phase === 'failed' && <Alert kind="error" title="The key file was not exported" lines={[keyExport.message, `Try again. If it fails again, contact ${SUPPORT_EMAIL}.`]} />}
+      {keyExport.phase === 'done' && <Alert kind="success" title={`Saved ${keyExport.name}`} lines={['Check your downloads folder.']} />}
+      <form className="offline-form" onSubmit={submitExport}>
+        <label className="field">Passphrase for the key file (at least {MIN_PASSPHRASE} characters)
+          <input type="password" autoComplete="new-password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} disabled={busy} />
+        </label>
+        <label className="field">Repeat the passphrase
+          <input type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} disabled={busy} aria-invalid={mismatch} aria-describedby={mismatch ? 'pp-mismatch' : undefined} />
+        </label>
+        {mismatch && <span className="why" id="pp-mismatch">The passphrases don’t match</span>}
+        <div className="actions">
+          <button className="btn btn-primary" type="submit" disabled={busy || tooShort || confirm !== passphrase}>{busy ? 'Exporting' : 'Export key file'}</button>
+          <a className="btn btn-secondary" href={`/${OFFLINE_TOOL_FILE}`} download={OFFLINE_TOOL_FILE}>Download offline tool</a>
+          <button className="btn btn-secondary" type="button" onClick={onChooseMasked}>Submit masked file</button>
+        </div>
+      </form>
     </Sec>
   )
 }

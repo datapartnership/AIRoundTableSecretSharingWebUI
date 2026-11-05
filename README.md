@@ -44,6 +44,15 @@ Available to Admin group members only:
 ### Results (`/results`)
 Query the aggregate for any country / month combination in the current epoch. Available once all epoch partners have submitted.
 
+### Offline submission (computer without internet)
+Some partners keep their data on a computer with no internet access. When the key exchange is done and the Quorum Check is complete, the epoch page shows **No internet on the computer with your data?**:
+
+1. **Export key file** (`airt-epoch-<id>-key.json`): for each cell the partner owes, it holds the pad, which is the net noise their pairwise secrets add (`calculateMaskedValue(0, …)`). It also holds the epoch's months, mask width and quorum rules. Everything is encrypted with a passphrase (PBKDF2-SHA256, 600k iterations → AES-256-GCM). The shared secrets and the ML-KEM private key never leave the browser.
+2. **Download offline tool** (`offline-masker.html`): one self-contained HTML file. Its CSP blocks every network request. On the offline computer the partner opens it from disk, opens the key file, uploads the CSV (same checks as online) and saves `airt-epoch-<id>-masked.json`. Each masked value is `(value + pad) mod 2^bits`, identical to online masking.
+3. **Submit masked file**: in the same browser that exported the key file. The page checks the epoch, user, mask width and key fingerprint (SHA-256 of the registered public key), and that every expected cell appears exactly once with a value in range. It then submits through `submit-batch` with signature `web-ui-offline`.
+
+The key file can unmask the partner's values, so partners are told to keep the passphrase separate and to delete the key file after submitting. The offline tool is built by `npm run build:offline` (`vite.offline.config.js` + `vite-plugin-singlefile`) into `public/offline-masker.html`, which is git-ignored. `npm run dev` and `npm run build` run it automatically. The library is `src/utils/offlineBundle.js` and the tool is `src/offline/`.
+
 ## Authentication
 
 MSAL v5 (`@azure/msal-browser` + `@azure/msal-react`) with interactive redirect flow. The access token is injected into every API request automatically. The `groups` claim in the token determines Admin vs Partner access.
