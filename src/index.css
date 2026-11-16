@@ -286,6 +286,13 @@ a { color: inherit; }
 .alert .ab { font-size: 13px; line-height: 18px; margin-top: 4px; }
 .alert-error { background: var(--error-bg); color: var(--error-text); }
 .alert-warning { background: var(--warning-bg); color: var(--warning-text); }
+.alert-success { background: var(--success-bg); color: var(--success-text); }
+/* Offline submission: passphrase fields on the epoch page and in the offline tool */
+.offline-form { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
+.offline-form .field { width: 100%; max-width: 360px; }
+.offline-form .field input { width: 100%; padding: 8px 12px; font: 400 14px/21px var(--font-ui); color: var(--text-primary);
+  border: 1px solid var(--border-control); border-radius: var(--radius-md); background: #fff; }
+.offline-title { font: 500 20px/45px var(--font-display); }
 
 /* CAN Checkbox: 18 px box, border-control outline, 14 px glyph (18 box minus 2 px each side), gap space-2 */
 .cb { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
@@ -361,3 +368,4 @@ a { color: inherit; }
 .admin .muted { color: var(--text-secondary); }
 .admin .ok { color: var(--success-text); font-weight: 600; }
 .admin .err { color: var(--error-text); }
+.offline-steps { max-width: 640px; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }

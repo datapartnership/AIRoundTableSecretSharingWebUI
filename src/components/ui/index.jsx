@@ -35,7 +35,7 @@ export const epochTag = (e) => e.cancelledAt
 export function Alert({ kind = 'error', title, lines = [], children }) {
   return (
     <div className={`alert alert-${kind}`} role={kind === 'error' ? 'alert' : 'status'}>
-      <Icon name={kind === 'error' ? 'warning-circle' : 'warning'} size={18} />
+      <Icon name={kind === 'error' ? 'warning-circle' : kind === 'success' ? 'check-circle' : 'warning'} size={18} />
       <div>
         <p className="at">{title}</p>
         {lines.filter(Boolean).map((l, i) => <p key={i} className="ab">{l}</p>)}
